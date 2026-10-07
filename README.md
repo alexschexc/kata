@@ -1,6 +1,20 @@
 # kata
 
+Zig prototype for reading `kjv`, `grb`, and `vul` in side-by-side terminal panes, with optional linked scrolling and configurable daily reading plans.
 
+Build: `zig build`
+
+Read a passage: `./zig-out/bin/kata --passage 'John:1'`
+
+Read today's assignment: `./zig-out/bin/kata`
+
+Inside the application: `p` chooses a plan; `d` chooses a reading day and previews importing progress. Use `j`/`k` and `Enter` in pickers, then `y` to confirm a day change. Each plan keeps its own progress, and the selected plan is remembered.
+
+Run unit tests: `zig build test --summary all`
+
+See [PROTOTYPE.md](PROTOTYPE.md) for controls, configuration, verification, and known limitations—including incomplete cross-source verse-number mapping.
+
+The repository-hosting scaffold below is retained from initialization.
 
 ## Getting started
 

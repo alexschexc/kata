@@ -1,0 +1,34 @@
+{
+  "name": "Gospels - one chapter a day",
+  "repeat": true,
+  "streams": [
+    {
+      "books": [
+        {
+          "name": "Matthew",
+          "chapters": 28
+        },
+        {
+          "name": "Mark",
+          "chapters": 16
+        },
+        {
+          "name": "Luke",
+          "chapters": 24
+        },
+        {
+          "name": "John",
+          "chapters": 21
+        }
+      ]
+    }
+  ],
+  "phases": [
+    {
+      "days": 89,
+      "rates": [
+        1
+      ]
+    }
+  ]
+}
