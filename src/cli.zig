@@ -5,6 +5,7 @@ const storage = @import("state.zig");
 const layout = @import("layout.zig");
 const tui = @import("tui.zig");
 const catalog = @import("catalog.zig");
+const paths = @import("platform_paths.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -79,7 +80,7 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
     if (confirm and start_day == null) return error.ConflictingArguments;
     if (start_day != null and (passage != null or complete or dump or check_plan)) return error.ConflictingArguments;
     const base = state_path orelse blk: {
-        const home = init.environ_map.get("XDG_STATE_HOME") orelse try std.fmt.allocPrint(allocator, "{s}/.local/state", .{init.environ_map.get("HOME") orelse return error.HomeUnavailable});
+        const home = try paths.root(allocator, init.environ_map, @import("builtin").os.tag == .windows, .state);
         break :blk try std.fmt.allocPrint(allocator, "{s}/kata/state.json", .{home});
     };
     if (!dump and !check_plan and !complete and start_day == null) {
@@ -179,4 +180,8 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
         return;
     }
     unreachable; // Interactive sessions are handled by app.run above.
+}
+
+test {
+    std.testing.refAllDecls(paths);
 }

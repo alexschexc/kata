@@ -1,5 +1,6 @@
 const std = @import("std");
 const source = @import("source.zig");
+const portable_width = @import("unicode_width.zig");
 extern "c" fn wcwidth(c: c_int) c_int;
 
 pub const Row = struct {
@@ -40,6 +41,7 @@ pub fn alignVerses(allocator: std.mem.Allocator, streams: [3][]const source.Vers
 }
 
 fn codepointWidth(cp: u21) usize {
+    if (@import("builtin").os.tag == .windows) return portable_width.width(cp);
     if ((cp >= 0x300 and cp <= 0x36f) or (cp >= 0x1ab0 and cp <= 0x1aff) or
         (cp >= 0x1dc0 and cp <= 0x1dff) or (cp >= 0xfe00 and cp <= 0xfe0f)) return 0;
     const width = wcwidth(@intCast(cp));
@@ -144,4 +146,8 @@ test "row heights are shared across panes" {
     try std.testing.expect(lines.len > 1);
     try std.testing.expectEqualStrings("", lines[lines.len - 1].cells[0]);
     try std.testing.expectEqualStrings("", lines[lines.len - 1].cells[2]);
+}
+
+test {
+    std.testing.refAllDecls(portable_width);
 }

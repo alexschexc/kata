@@ -6,33 +6,8 @@ const catalog = @import("catalog.zig");
 const scheduling = @import("plan.zig");
 const input = @import("input.zig");
 var decoder: input.Decoder = .{};
-const c = @cImport({
-    @cInclude("unistd.h");
-    @cInclude("termios.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("poll.h");
-    @cInclude("signal.h");
-    @cInclude("locale.h");
-});
-
-// Call the libc symbol directly: Zig 0.16 cannot translate this host's
-// optimized glibc fortify inline wrapper for poll. The caller supplies one
-// real pollfd record and the exact count, so no inferred object size is needed.
-extern "c" fn poll(fds: [*]c.struct_pollfd, count: c.nfds_t, timeout: c_int) c_int;
-
-var interrupted = std.atomic.Value(bool).init(false);
-fn stop(_: c_int) callconv(.c) void {
-    interrupted.store(true, .monotonic);
-}
-
-pub fn writeAll(bytes: []const u8) !void {
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const count = c.write(1, bytes.ptr + offset, bytes.len - offset);
-        if (count <= 0) return error.TerminalWrite;
-        offset += @intCast(count);
-    }
-}
+const backend = if (@import("builtin").os.tag == .windows) @import("terminal_windows.zig") else @import("terminal_posix.zig");
+pub const writeAll = backend.writeAll;
 
 fn clipped(text: []const u8, width: usize) []const u8 {
     var end: usize = 0;
@@ -173,43 +148,18 @@ fn renderPicker(allocator: std.mem.Allocator, w: *std.Io.Writer, picker: picking
 }
 
 pub const Terminal = struct {
-    original: c.struct_termios,
-    old_int: @TypeOf(c.signal(c.SIGINT, stop)),
-    old_term: @TypeOf(c.signal(c.SIGTERM, stop)),
-    old_hup: @TypeOf(c.signal(c.SIGHUP, stop)),
-
+    native: backend.Terminal,
     pub fn init() !Terminal {
-        if (c.isatty(0) != 1 or c.isatty(1) != 1) return error.InteractiveTerminalRequired;
-        _ = c.setlocale(c.LC_CTYPE, "");
-        var original: c.struct_termios = undefined;
-        if (c.tcgetattr(0, &original) != 0) return error.TerminalSetup;
-        var raw = original;
-        c.cfmakeraw(&raw);
-        if (c.tcsetattr(0, c.TCSAFLUSH, &raw) != 0) return error.TerminalSetup;
-        errdefer _ = c.tcsetattr(0, c.TCSAFLUSH, &original);
-        interrupted.store(false, .monotonic);
+        var native = try backend.Terminal.init();
+        errdefer native.deinit();
         decoder = .{};
-        const terminal: Terminal = .{
-            .original = original,
-            .old_int = c.signal(c.SIGINT, stop),
-            .old_term = c.signal(c.SIGTERM, stop),
-            .old_hup = c.signal(c.SIGHUP, stop),
-        };
-        errdefer {
-            _ = c.signal(c.SIGINT, terminal.old_int);
-            _ = c.signal(c.SIGTERM, terminal.old_term);
-            _ = c.signal(c.SIGHUP, terminal.old_hup);
-            writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
-        }
+        errdefer writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
         try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
-        return terminal;
+        return .{ .native = native };
     }
     pub fn deinit(self: *Terminal) void {
         writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
-        _ = c.tcsetattr(0, c.TCSAFLUSH, &self.original);
-        _ = c.signal(c.SIGINT, self.old_int);
-        _ = c.signal(c.SIGTERM, self.old_term);
-        _ = c.signal(c.SIGHUP, self.old_hup);
+        self.native.deinit();
     }
 };
 
@@ -219,35 +169,21 @@ pub fn run(allocator: std.mem.Allocator, rows: []const layout.Row, state: *stora
     return runInTerminal(allocator, rows, state, options);
 }
 
-pub fn isInterrupted() bool {
-    return interrupted.load(.monotonic);
-}
+pub const isInterrupted = backend.isInterrupted;
 
 fn readKey() !?u8 {
-    // Each poll bounds the interbyte wait and returns control to resize/render.
-    // The decoder belongs to the terminal, not a menu or reader invocation.
-    while (!isInterrupted()) {
-        var descriptor = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
-        const ready = poll(@ptrCast(&descriptor), 1, 80);
-        if (ready < 0) {
-            if (isInterrupted()) return null;
-            return error.TerminalRead;
-        }
-        if (ready == 0) return decoder.timeout();
-        if ((descriptor.revents & (c.POLLHUP | c.POLLERR | c.POLLNVAL)) != 0) return error.TerminalRead;
-        var byte: u8 = 0;
-        if (c.read(0, &byte, 1) != 1) return error.TerminalRead;
-        if (decoder.feed(byte)) |key| {
-            if (key == 3) {
-                interrupted.store(true, .monotonic);
-                return null;
-            }
-            return key;
-        }
-        // Return even under an endless byte flood, keeping signal/resize live.
+    if (isInterrupted()) return null;
+    const value = try backend.readByte();
+    const key = switch (value) {
+        .byte => |byte| decoder.feed(byte),
+        .timeout => decoder.timeout(),
+        .ignored => null,
+    };
+    if (key == 3) {
+        backend.interrupt();
         return null;
     }
-    return null;
+    return key;
 }
 
 fn handlePicker(picker: *picking.Picker, key: u8, count: usize, redraw: *bool) ?picking.Action {
@@ -268,10 +204,9 @@ pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []co
     var old_columns: usize = 0;
     var old_height: usize = 0;
     while (!isInterrupted()) {
-        var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-        _ = c.ioctl(1, c.TIOCGWINSZ, &size);
-        const columns: usize = if (size.ws_col > 0) size.ws_col else 100;
-        const height: usize = if (size.ws_row > 0) size.ws_row else 30;
+        const size = try backend.size();
+        const columns = size.columns;
+        const height = size.rows;
         if (columns != old_columns or height != old_height) redraw = true;
         if (redraw) {
             var frame = std.Io.Writer.Allocating.init(allocator);
@@ -323,11 +258,10 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
     var notice = options.notice;
     if (!state.enabled[state.focus]) moveFocus(state, 1);
 
-    while (!interrupted.load(.monotonic)) {
-        var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
-        _ = c.ioctl(1, c.TIOCGWINSZ, &size);
-        const columns: usize = if (size.ws_col > 0) size.ws_col else 100;
-        const height: usize = if (size.ws_row > 0) size.ws_row else 30;
+    while (!isInterrupted()) {
+        const size = try backend.size();
+        const columns = size.columns;
+        const height = size.rows;
         if (columns != screen_columns or height != screen_rows) {
             screen_columns = columns;
             screen_rows = height;
@@ -465,4 +399,9 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
     }
     remember(lines, tops, state);
     return null;
+}
+
+test {
+    std.testing.refAllDecls(@import("console_geometry.zig"));
+    std.testing.refAllDecls(@import("console_queue.zig"));
 }

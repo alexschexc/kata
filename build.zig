@@ -157,6 +157,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // Cross-target tests can be compiled here without pretending to run them.
+    const test_build_step = b.step("test-build", "Compile tests without running (for cross targets)");
+    test_build_step.dependOn(&mod_tests.step);
+    test_build_step.dependOn(&exe_tests.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means

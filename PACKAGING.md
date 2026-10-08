@@ -46,7 +46,18 @@ All checks use isolated temporary state; they do not mutate normal reading progr
 
 ## Cross-platform boundaries
 
-A separate executable is needed for each OS/CPU. Windows and Apple Silicon (`aarch64-macos`) are deferred until the bundled Linux executable is reviewed and confirmed. Windows requires a native console/input/terminal backend instead of the current POSIX termios/ioctl/signal implementation. macOS must also be build-checked and exercised on target hardware; Linux verification does not prove macOS behavior.
+A separate executable is needed for each OS/CPU. After Linux confirmation, Windows x86-64 and Apple Silicon macOS executables were successfully cross-compiled. Zig uses its own Mach-O linker for macOS rather than LLD; ELF and PE builds keep LLD. Windows has a native console/input/terminal backend rather than POSIX termios/ioctl/signals. Cross-build headers, full embedded corpora/provenance, and OS-only dependencies passed inspection; the updated Linux ReleaseSafe suite passed 80 tests. Native Windows/macOS execution remains unverified. The previously confirmed installed Linux binary is unchanged.
+
+```sh
+zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/macos-arm64
+zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/windows-x64
+```
+
+`tests/cross-artifacts.py` checks actual executable headers, architecture, OS-library dependencies, and the complete embedded corpus bytes/provenance for both targets. This is artifact inspection, not native execution. No macOS machine or Windows/Wine runner is available in this Linux environment.
+
+On each destination machine, use `python tests/target-smoke.py /path/to/kata` (or the Windows `.exe` path) for an optional isolated CLI smoke test. Python is required only to run the test script, never the app. Then review the real terminal: library, free reading, plan selection/import, scrolling/resize, unknown keys and function/arrow sequences, bracketed paste, normal quit/Ctrl-C, and restored terminal settings. Use `--state` with a temporary path to protect normal progress. Test data/state directories without HOME set on Windows as well.
+
+The macOS executable imports only Apple's standard `libSystem.B.dylib`; the current target minimum is macOS 13.0. Mach-O code-signature presence is checked, but Developer ID signing/notarization is not performed. Windows publisher signing is likewise not provided. Platform security/download policies may require additional release signing before wider distribution. Native terminal, date, file replacement, and platform security behavior remain target-machine checks; Linux success does not prove them.
 
 The older `zig-out/aarch64-linux-musl/bin/kata` artifact predates bundling. It was only cross-built, not executed on ARM hardware, and is not this standalone release.
 

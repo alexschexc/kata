@@ -8,6 +8,7 @@ const tui = @import("tui.zig");
 const library = @import("library.zig");
 const reading = @import("reading.zig");
 const start = @import("start_menu.zig");
+const paths = @import("platform_paths.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -61,7 +62,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     _ = try plans.add("builtin:optina", optina);
     _ = try plans.add("builtin:gospels", gospels);
     try plans.discover(init.io, "config");
-    const config_home = init.environ_map.get("XDG_CONFIG_HOME") orelse try std.fmt.allocPrint(allocator, "{s}/.config", .{init.environ_map.get("HOME") orelse return error.HomeUnavailable});
+    const config_home = try paths.root(allocator, init.environ_map, @import("builtin").os.tag == .windows, .config);
     const user_plans = try std.fs.path.join(allocator, &.{ config_home, "kata", "plans" });
     try plans.discover(init.io, user_plans);
     var selected: usize = 0;

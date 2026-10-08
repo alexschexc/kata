@@ -11,7 +11,6 @@ test "portable width covers Greek combining format CJK and emoji" {
     try std.testing.expectEqual(@as(usize, 1), width('a'));
 }
 
-
 // Unicode 16.0.0 properties from Python unicodedata; generated once at development time.
 // Nonspacing/enclosing/format marks are zero cells; assigned W/F characters are two.
 // Ambiguous width (including Greek) is one. No locale or runtime dependency.
