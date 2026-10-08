@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "sources": {
+    "grb": {
+      "applet_path": "/usr/bin/grb",
+      "applet_sha256": "7d5b9fe563bb1c890914b6ad2a3b3e696cd1a7581da6a2e7cf85e118f43cc6ca",
+      "archive_sha256": "4885f22e1ed1d7c916a8e1ed6d4921e8989e734897bdcdaa53874e21be0b3a1a",
+      "books": 87,
+      "bytes": 10307364,
+      "chapter_spans": 1461,
+      "member": "grb.tsv",
+      "rows": 39222,
+      "tsv_sha256": "ff475ad46e17804b8e6c4b6859505fd8a71f2d483229b1f1ffaa446bd02b45a0"
+    },
+    "kjv": {
+      "applet_path": "/usr/local/bin/kjv",
+      "applet_sha256": "a48bdaac5a65215a888b621a2b55cac5a860b7dc0898a4266246644f88f0cdca",
+      "archive_sha256": "819b31af465d470e8353f3bd1db7cefc3042673eaf9592ca31ecb26eb5f5dca0",
+      "books": 79,
+      "bytes": 5634305,
+      "chapter_spans": 1354,
+      "member": "kjv.tsv",
+      "rows": 36642,
+      "tsv_sha256": "ccb9b2c3cc5c8e251befe414c93dd3790328ea39e54c308c1173eab27908c366"
+    },
+    "vul": {
+      "applet_path": "/usr/bin/vul",
+      "applet_sha256": "fdf36bf23e823287ad396bc4c3ade3e2c01b8541f425c6a7d70f674f45ccd936",
+      "archive_sha256": "66c0db8413659e8059780a2315e1bae6247732bebb363a78a457f42a32af35bd",
+      "books": 68,
+      "bytes": 4500727,
+      "chapter_spans": 1228,
+      "member": "vul.tsv",
+      "rows": 32921,
+      "tsv_sha256": "1ff06d318623c0a860c07d65d000fb59f19083e940fe20e3233f6767e907a83b"
+    }
+  }
+}

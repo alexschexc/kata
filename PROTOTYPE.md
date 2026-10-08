@@ -1,10 +1,10 @@
 # Kata prototype
 
-Kata is a Zig terminal reader backed by the installed `kjv`, `grb`, and `vul` commands. It loads their real output, not bundled substitute text.
+Kata is a Zig terminal reader with the original installed `kjv`, `grb`, and `vul` TSV datasets embedded in the executable. Native Zig code selects their actual text; no source command or substitute dataset is used at runtime.
 
 ## Build and review
 
-Requirements: Linux/POSIX terminal, Zig 0.16.0, libc, and all three source commands on `PATH`. The build uses Zig's LLVM/LLD backend; this avoids the native linker's incompatibility with the host's newer glibc SFrame relocations.
+Build requirements: Zig 0.16.0 and libc support supplied by Zig's toolchain. Runtime requirements: a Linux/POSIX terminal and writable state directory. The bundled source files and indexes are included in the project; normal builds need neither Python nor installed source commands. The build uses Zig's LLVM/LLD backend; this avoids the native linker's incompatibility with the host's newer glibc SFrame relocations.
 
 From this directory:
 
@@ -14,7 +14,7 @@ zig build test --summary all
 ./zig-out/bin/kata --passage 'John:1'
 ```
 
-Start the daily reading plan:
+Open the library and choose a reading mode:
 
 ```sh
 ./zig-out/bin/kata
@@ -25,6 +25,23 @@ For a review without touching your usual progress, select a separate state file:
 ```sh
 ./zig-out/bin/kata --state /tmp/kata-review-state.json
 ```
+
+## Library and reading modes
+
+Normal startup opens **Library → title → Reading mode**. Choose **Bible** for every available book from the installed `kjv`, `grb`, and `vul` sources: Old Testament, New Testament, additional books, and distinct Greek textual variants. The duplicate **New Testament** listing is hidden. Its internal metadata and existing files are retained for compatibility; the remembered book/chapter maps into Bible's picker. Future unrelated titles require real source wrappers and a registry entry; they are not offered as nonfunctional placeholders.
+
+Book names, source query aliases, and chapter availability were discovered from the original source commands. Translation collections differ: a source without the chosen book/chapter/verse contributes no verses, while the available sources remain readable. Malformed passage references remain errors rather than fabricated or substituted text. Variant editions remain separate books; verse-number differences are not automatically mapped.
+
+The installed editions list 79 KJV books, 87 Greek books, and 68 Latin books, forming 89 distinct canonical entries. Greek records with repeated verse labels are displayed together under that label, preserving their text in source order with a space between records. This preserves source content without claiming a corrected verse-number mapping. Sirach's chapter-zero prologue is accessible; chapter choices and navigation use observed chapter availability rather than assuming every number exists in every source.
+
+For a standalone, size-optimized stripped x86-64 Linux executable, build with `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`. This statically links musl and embeds the original text uncompressed. Python scripts under `tests/` are extraction/provenance and verification tools only. `--licenses` displays embedded source credits and licensing notes.
+
+- **Free reading:** choose a book, chapter, and starting verse. Menus accept `j`/`k` or a numbered selection followed by `Enter`. The verse picker uses the actual chapter output: `0` resumes that chapter's saved position (or starts at its beginning if new), while a verse selection anchors the full chapter rather than fetching only one verse. `[` and `]` move to previous/next chapters, including across book boundaries, without wrapping around the title.
+- **Reading plans:** choose a plan and enter the existing daily-session reader. Completion, postponed missed readings, day imports, and independent per-plan progress behave as before.
+
+Press `m` in either reader to return to the library, or `o` to choose a free-reading place. `Esc`/`q` backs out of nested startup menus; at Library it quits without writing progress. Explicit `--passage` and `--plan` launches still open directly in their corresponding reading view.
+
+Free-reading positions and pane settings are saved separately for each chapter or explicit passage under `<state-path>.library/<title-id>/`. `<state-path>.free-selection.json` remembers the last free-reading book/chapter for the picker. Free reading does not alter a plan's completed prefix or completion date. Existing plan progress is retained.
 
 Press `p` inside the reader to choose a plan. Use `j`/`k`, then `Enter`; `Esc` or `q` cancels. Kata includes Optina and a one-chapter-a-day Gospels plan. It also discovers valid JSON plans from `config/` in the current working directory and `$XDG_CONFIG_HOME/kata/plans/` (normally `~/.config/kata/plans/`). Invalid files are skipped with a notice; identical configs are deduplicated. Discovery happens at launch, so restart after adding or editing a file.
 
@@ -76,6 +93,9 @@ Use the same `--state` for a command-line import and subsequent launches when us
 | `h` / `l`, or `Tab` | Focus another visible pane |
 | `s` | Toggle linked and independent scrolling |
 | `1` / `2` / `3` | Show/hide KJV, Greek, and Latin panes |
+| `m` | Return to Library and choose a title/mode |
+| `o` | Open the free-reading book/chapter/verse picker |
+| `[` / `]` | Previous/next chapter in free-reading mode |
 | `p` | Open the in-app plan picker; `j`/`k`, then `Enter` selects |
 | `d` | Open the in-app day picker; browse or type a number, `Enter` previews, `y` confirms |
 | `Esc` / `q` in a picker | Cancel and return to the reader |
@@ -83,6 +103,8 @@ Use the same `--state` for a command-line import and subsequent launches when us
 | `q`, or `Ctrl-c` | Save position and leave the TUI |
 
 Corresponding verse labels share a row height, with padding under shorter translations. Linked scrolling operates over this common layout; independent scrolling moves only the focused pane. Resizing rewraps text while preserving verse-row anchors. The terminal's original input mode and screen are restored on exit and handled termination signals.
+
+Unknown keys and invalid numeric selections do nothing silently. Terminal escape sequences (including arrow/function-key and modified-key events), control strings, malformed Unicode, and bracketed-paste payloads are consumed without dispatching their bytes as commands. Arrow keys are currently ignored; use `j`/`k`. A lone `Esc` still cancels after a short interbyte timeout. Incomplete bracketed paste remains quarantined until its closing marker, or until the process is stopped with a signal. Paste framing is enabled on entry and disabled on exit.
 
 ## Reading plans and state
 
@@ -105,20 +127,28 @@ Existing base progress is preserved. Additional plans use `<state-path>.plans/<c
 
 ## Prototype boundaries
 
-- The source adapter currently supports the New Testament books and its listed aliases. Other texts and Old Testament books are not implemented yet.
+- The source catalog covers the bundled editions' complete book lists, including source-specific variants. Updating an edition requires regenerating source data/indexes and the catalog, then rerunning source parity verification.
 - Alignment currently matches explicit book/chapter/verse labels, never output-row indices. Missing labels in a returned passage appear as placeholders.
 - A curated cross-source map for differently numbered or divided verses is not implemented. Equal numbers do not prove equal textual boundaries; both TUI and dump mode warn about this. Do not treat the prototype as a verified full textual concordance.
-- Plan/day selection and pane visibility are in-app. Plan editing remains JSON-based; there is no in-app passage picker or configuration editor yet.
-- Passage fetching is synchronous and requires all three source tools, even if a pane is hidden.
+- Library, mode, passage, plan/day selection, and pane visibility are in-app. Plan editing remains JSON-based; there is no in-app configuration editor yet.
+- Passage selection is synchronous and scans indexed spans of the embedded text for each available translation, even if its pane is hidden. No external sources or extraction directories are required.
 - Viewport positions are saved on normal exit and handled termination; confirmed completion is saved immediately. Forced termination such as SIGKILL cannot save unsaved navigation.
 - Full grapheme-cluster/emoji rendering is not claimed. Greek UTF-8 and combining-mark wrapping have unit coverage; libc supplies display-cell widths in the terminal locale.
 
 ## Verification performed
 
-`zig build test` passed 35 Zig tests covering parsing, layout, plan validation and boundaries, allocation cleanup, calendar completion rules, importing/repositioning progress, plan catalog deduplication, isolated state paths, and picker navigation/confirmation.
+`zig build test -Dtarget=x86_64-linux-musl` passed 70 Zig tests in both ReleaseSafe and ReleaseSmall, covering parsing, bundled retrieval and reference selection, input framing, bounded numeric/stale selections, layout, plan validation and boundaries, calendar completion rules, importing/repositioning progress, catalogs, isolated state paths, picker navigation, supported-title metadata, adjacent chapters, verse anchoring, the single visible Bible listing, and mapping legacy book/chapter selections.
+
+`python tests/all-source-books.py --chapters` verified every complete book listed by the original sources: 234 source/book combinations across 89 canonical books, comparing 108,305 distinct source verse labels/texts and 1,479 chapter queries. Kata runs with no applets on PATH; original tools are verification oracles only. Repeated Greek labels preserve all record text in order. No progress is written. `tests/reference-parity.py` separately compares lists, ranges, cross-chapter selection, and malformed-reference rejection.
+
+`tests/bundle-standalone.py` copies only the executable outside the repository, isolates HOME/config/state, and clears PATH. It verifies dump mode, full-library terminal workflows, built-in reading plans, embedded licenses/provenance, and input stress with no source tools. `tests/bundle_sources.py --verify` checks exact original archive-member bytes and generated indexes. The Linux release is stripped and statically linked with musl; raw text is embedded uncompressed.
+
+`python tests/full-library-pty.py` verified the size-optimized executable from outside the repository: full-library startup, Genesis reading and chapter navigation, Greek-only books and variants, source-specific names, Sirach's chapter-zero prologue, bookmark restoration, preserved plan counters, and terminal cleanup. `tests/plan-regression.py` and `tests/cli-regression.py` retain the earlier plan/import checks. These checks use isolated temporary state/config, not normal user progress.
 
 A temporary Python PTY probe exercised the actual built Zig application against all three real sources. It verified retrieval for the first chapter of all 27 configured books, daily chapter assembly, linked/independent scrolling, position restoration, source toggles, resizing and narrow terminals, SIGTERM cleanup, confirmation/cancellation, duplicate completion blocking, missed-day behavior, cycle repetition, and incompatible-plan protection. Python is verification tooling only; the application is Zig.
 
 A separate temporary CLI probe verified read-only start-day previews, confirmed state readback, real John 20/Revelation 21 retrieval after importing day 88, normal completion and next-day progression, invalid/conflicting argument protection, retained repeat cycles and pane preferences, backward repositioning, and restarting a completed nonrepeating plan.
 
 A temporary in-app PTY probe verified plan/day menus, cancellation, invalid-day protection, confirmed day-88 import, independent plan progress and restored positions, remembered selection, custom-plan discovery/completion, restoring a custom plan from outside the repository, restarting a finished nonrepeating plan, menus in narrow terminals, and terminal cleanup. Session changes keep one application screen active instead of returning briefly to the shell.
+
+A library PTY probe verified startup title/mode choices, free chapter/verse selection using actual source text, invalid chapters, starting-verse anchors, previous/next chapter navigation, remembered free-reading location, switching back to the existing plan view, and separate free/plan state. Quitting or terminating on the start menu restores the terminal without creating progress. All probes use isolated state/config files.

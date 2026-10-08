@@ -1,0 +1,35 @@
+Native bundled retrieval TDD evidence (observed terminal runs)
+
+All red and green runs used:
+PATH='' /home/alexander/.local/share/mise/installs/zig/0.16.0/bin/zig test src/source.zig --test-filter '<name>'
+
+1. bundled fetch works without external executables
+   RED: FAIL (FileNotFound), source.fetch -> std.process.run -> spawn.
+   GREEN: All 1 tests passed after embedded native fetch replacement.
+2. native chapter ranges include available chapters across source gaps
+   RED: FAIL (InvalidCharacter), old single-chapter numeric parse of 2-3.
+   GREEN: All 1 tests passed after inclusive chapter range selection.
+3. native verse lists and ranges select labels once in source order
+   RED: FAIL (InvalidCharacter), old numeric parse of 5,1-3,3.
+   GREEN: All 1 tests passed after validated list/range selection.
+4. native cross chapter verse ranges retain endpoint labels
+   RED: FAIL (InvalidReference), list parser rejected 50-2:3.
+   GREEN: All 1 tests passed after native lexicographic label interval.
+5. reference rejects malformed numeric suffixes before availability
+   RED: expected error.InvalidReference, found John:2-1.
+   GREEN: All 1 tests passed after Reference.init delegates to native grammar.
+6. native cross chapter ranges do not suppress a source missing first chapter
+   RED: FAIL (TestUnexpectedResult), Greek stream was empty for Jeremiah:2:1-3:3.
+   GREEN: All 1 tests passed after availability checks every selected observed chapter.
+7. streams uses source availability and source-specific names
+   RED: expected error.UnsupportedLocation, found empty slice for direct Greek Jeremiah:2 fetch.
+   GREEN: Full 17-test source suite passed after restoring direct-fetch unsupported-location contract.
+
+Subsequent refactor: label hash index replaced quadratic duplicate search;
+full build tests passed with empty PATH (67/67 at that point; final run
+70/70 with parent test additions and two extra native regression checks).
+Final standalone source suite: 19/19 passed with empty PATH.
+Golden parity: 234 source books, 89 canonical books, 108305 distinct source
+verse labels/texts, 1479 canonical chapter queries all passed.
+Parent reference-parity.py and bundle-standalone.py passed (copied binary,
+empty PATH, outside repository, readers/menus/plans/licenses).

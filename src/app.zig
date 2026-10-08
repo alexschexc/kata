@@ -5,6 +5,9 @@ const scheduling = @import("plan.zig");
 const source = @import("source.zig");
 const layout = @import("layout.zig");
 const tui = @import("tui.zig");
+const library = @import("library.zig");
+const reading = @import("reading.zig");
+const start = @import("start_menu.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -44,8 +47,7 @@ fn prepare(allocator: std.mem.Allocator, io: std.Io, entry: catalog.Entry, state
     }
     var rows: std.ArrayList(layout.Row) = .empty;
     for (references.items) |reference| {
-        var streams: [3][]const source.Verse = undefined;
-        for (source.tools, 0..) |tool, pane| streams[pane] = try source.fetch(allocator, io, tool, reference);
+        const streams = try source.streams(allocator, io, reference);
         try rows.appendSlice(allocator, try layout.alignVerses(allocator, streams));
     }
     if (rows.items.len == 0) return error.NoVerses;
@@ -85,22 +87,54 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     if (plans.skipped > 0) notice = try std.fmt.allocPrint(allocator, "{d} invalid plan files ignored. p chooses plans. Verse-number variants are unmapped.", .{plans.skipped});
     var base_hash = (try storage.load(allocator, init.io, base)).plan_hash;
     if (explicit_plan != null and initial_passage == null and base_hash != 0 and base_hash != plans.entries.items[selected].hash) return error.PlanChangedUseSeparateState;
-    var passage = initial_passage;
-    var terminal: ?tui.Terminal = null;
-    defer if (terminal) |*active_terminal| active_terminal.deinit();
-    while (true) {
+    var last_free: library.Location = reading.loadBookmark(allocator, init.io, base) catch .{};
+    var active: ?start.Choice = if (initial_passage) |raw| .{ .free = try reading.fromReference(allocator, raw) } else if (explicit_plan != null) .{ .plan = selected } else null;
+    var override = initial_passage;
+    var terminal = try tui.Terminal.init();
+    defer terminal.deinit();
+    while (!tui.isInterrupted()) {
+        if (active == null) {
+            active = start.run(plans.entries.items, selected, init.io, last_free, notice) catch |err| {
+                notice = try std.fmt.allocPrint(allocator, "Cannot open requested reading: {s}. Choose another place or mode.", .{@errorName(err)});
+                continue;
+            };
+            if (active == null) return;
+            override = null;
+        }
+        var free: ?library.Location = null;
+        switch (active.?) {
+            .plan => |index| selected = index,
+            .free => |at| free = at,
+        }
         const entry = plans.entries.items[selected];
-        const path = try catalog.progressPath(allocator, base, base_hash, entry.hash);
-        var state = try storage.load(allocator, init.io, path);
-        if (state.plan_hash != 0 and state.plan_hash != entry.hash and passage == null) return error.PlanChangedUseSeparateState;
-        const date = try currentDate();
         var session_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer session_arena.deinit();
-        const session = try prepare(session_arena.allocator(), init.io, entry, &state, date, passage);
-        if (terminal == null) terminal = try tui.Terminal.init();
-        const action = try tui.runInTerminal(session_arena.allocator(), session.rows, &state, .{
+        const work = session_arena.allocator();
+        const query: ?[]const u8 = if (free) |at| override orelse try library.reference(work, at) else null;
+        const path = if (free) |at| try reading.path(work, base, at, override) else try catalog.progressPath(work, base, base_hash, entry.hash);
+        var state = storage.load(work, init.io, path) catch |err| {
+            notice = try std.fmt.allocPrint(allocator, "Cannot load progress: {s}. Saved data was not changed.", .{@errorName(err)});
+            active = null;
+            continue;
+        };
+        if (free == null and state.plan_hash != 0 and state.plan_hash != entry.hash) return error.PlanChangedUseSeparateState;
+        if (free != null and (state.plan_hash != 0 or state.next_day != 0 or state.completed_on != 0)) return error.InvalidFreeState;
+        const date = try currentDate();
+        var session = prepare(work, init.io, entry, &state, date, query) catch |err| {
+            notice = try std.fmt.allocPrint(allocator, "Cannot load reading: {s}. Progress was not changed.", .{@errorName(err)});
+            active = null;
+            continue;
+        };
+        if (free) |at| {
+            try reading.anchor(session.rows, &state, at);
+            session.title = try std.fmt.allocPrint(work, "{s} · free reading", .{session.title});
+            last_free = at;
+            last_free.verse = null;
+            active = .{ .free = last_free };
+        }
+        const action = try tui.runInTerminal(work, session.rows, &state, .{
             .title = session.title,
-            .plan_mode = passage == null,
+            .plan_mode = free == null,
             .today = date,
             .state_path = path,
             .io = init.io,
@@ -110,50 +144,86 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             .notice = notice,
         });
         try storage.save(allocator, init.io, path, state);
-        if (std.mem.eql(u8, base, path)) base_hash = state.plan_hash;
+        if (free != null) try reading.saveBookmark(allocator, init.io, base, last_free) else {
+            try catalog.saveSelected(allocator, init.io, base, entry.id);
+            if (std.mem.eql(u8, base, path)) base_hash = state.plan_hash;
+        }
         if (action == null) return;
-        var target = selected;
-        var changed = state;
-        var target_path = path;
+        var target = active.?;
+        var changed_day: ?usize = null;
         switch (action.?) {
-            .choose_plan => |index| {
-                target = index;
-                target_path = try catalog.progressPath(allocator, base, base_hash, plans.entries.items[target].hash);
-                changed = storage.load(allocator, init.io, target_path) catch |err| {
-                    notice = try std.fmt.allocPrint(allocator, "Cannot open plan progress: {s}. Previous plan retained.", .{@errorName(err)});
-                    continue;
-                };
-                if (changed.plan_hash != 0 and changed.plan_hash != plans.entries.items[target].hash) {
-                    notice = "Plan progress identity mismatch. Previous plan retained.";
-                    continue;
-                }
+            .home => {
+                active = null;
+                override = null;
+                continue;
             },
-            .start_day => |day| {
-                if (!entry.plan.parsed.value.repeat) {
-                    changed.next_day = 0;
-                    changed.completed_on = 0;
-                }
-                changed.startAtDay(day, entry.plan.totalDays(), date) catch |err| {
-                    notice = try std.fmt.allocPrint(allocator, "Cannot change reading day: {s}", .{@errorName(err)});
+            .open_place => {
+                const at = start.choosePlace(init.io, last_free) catch |err| {
+                    notice = try std.fmt.allocPrint(allocator, "Cannot choose reading place: {s}. Previous view retained.", .{@errorName(err)});
+                    continue;
+                } orelse continue;
+                target = .{ .free = at };
+            },
+            .next_chapter, .previous_chapter => {
+                const at = free orelse continue;
+                const next = library.adjacent(at, action.? == .next_chapter) orelse {
+                    notice = "This is the boundary of the selected title. o chooses any place; m opens the library.";
                     continue;
                 };
+                target = .{ .free = next };
+            },
+            .choose_plan => |index| target = .{ .plan = index },
+            .start_day => |day| {
+                if (free != null) continue;
+                changed_day = day;
             },
         }
-        // Fetch and validate before committing a switch or confirmed day change.
+        // Validate the requested content before committing any mode/location change.
         var validation = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer validation.deinit();
-        _ = prepare(validation.allocator(), init.io, plans.entries.items[target], &changed, date, null) catch |err| {
-            notice = try std.fmt.allocPrint(allocator, "Cannot load requested reading: {s}. Previous plan/day retained.", .{@errorName(err)});
+        const temporary = validation.allocator();
+        var target_plan = selected;
+        var target_free: ?library.Location = null;
+        switch (target) {
+            .plan => |index| target_plan = index,
+            .free => |at| target_free = at,
+        }
+        const target_entry = plans.entries.items[target_plan];
+        const target_path = if (target_free) |at| try reading.path(temporary, base, at, null) else try catalog.progressPath(temporary, base, base_hash, target_entry.hash);
+        var changed = storage.load(temporary, init.io, target_path) catch |err| {
+            notice = try std.fmt.allocPrint(allocator, "Cannot open requested progress: {s}. Previous view retained.", .{@errorName(err)});
+            continue;
+        };
+        if (target_free == null and changed.plan_hash != 0 and changed.plan_hash != target_entry.hash) {
+            notice = "Plan identity mismatch. Previous view retained.";
+            continue;
+        }
+        if (changed_day) |day| {
+            if (!target_entry.plan.parsed.value.repeat) {
+                changed.next_day = 0;
+                changed.completed_on = 0;
+            }
+            changed.startAtDay(day, target_entry.plan.totalDays(), date) catch |err| {
+                notice = try std.fmt.allocPrint(allocator, "Cannot change day: {s}", .{@errorName(err)});
+                continue;
+            };
+        }
+        const target_query: ?[]const u8 = if (target_free) |at| try library.reference(temporary, at) else null;
+        const validated = prepare(temporary, init.io, target_entry, &changed, date, target_query) catch |err| {
+            notice = try std.fmt.allocPrint(allocator, "Cannot load requested reading: {s}. Previous view retained.", .{@errorName(err)});
+            continue;
+        };
+        if (target_free) |at| reading.anchor(validated.rows, &changed, at) catch {
+            notice = "Starting verse unavailable. Previous view retained.";
             continue;
         };
         try storage.save(allocator, init.io, target_path, changed);
-        try catalog.saveSelected(allocator, init.io, base, plans.entries.items[target].id);
-        if (std.mem.eql(u8, base, target_path)) base_hash = changed.plan_hash;
-        selected = target;
-        passage = null;
-        notice = switch (action.?) {
-            .start_day => "Reading position saved. Preceding days count as complete; selected day is pending.",
-            .choose_plan => "Plan selected. Its own progress restored. Verse-number variants are still unmapped.",
-        };
+        if (target_free) |at| try reading.saveBookmark(allocator, init.io, base, at) else {
+            try catalog.saveSelected(allocator, init.io, base, target_entry.id);
+            if (std.mem.eql(u8, base, target_path)) base_hash = changed.plan_hash;
+        }
+        active = target;
+        override = null;
+        notice = if (changed_day != null) "Reading position saved. Preceding days count as complete; selected day is pending." else "Reading selected. Free-reading positions and plan progress are kept separately; verse-number variants are unmapped.";
     }
 }

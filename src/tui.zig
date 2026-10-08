@@ -4,6 +4,8 @@ const storage = @import("state.zig");
 const picking = @import("picker.zig");
 const catalog = @import("catalog.zig");
 const scheduling = @import("plan.zig");
+const input = @import("input.zig");
+var decoder: input.Decoder = .{};
 const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("termios.h");
@@ -111,6 +113,19 @@ pub const Options = struct {
     notice: []const u8 = "Verse-label alignment; numbering variants are not yet mapped.",
 };
 
+fn completeDay(state: *storage.State, today: i32) !bool {
+    state.complete(today) catch |err| switch (err) {
+        error.AlreadyCompletedToday => return false,
+        else => return err,
+    };
+    return true;
+}
+
+test "completion preserves real state overflow errors" {
+    var state: storage.State = .{ .next_day = std.math.maxInt(usize) };
+    try std.testing.expectError(error.ProgressOverflow, completeDay(&state, 20261007));
+}
+
 fn dayLabel(allocator: std.mem.Allocator, plan: scheduling.Plan, day: usize) ![]const u8 {
     var label = std.Io.Writer.Allocating.init(allocator);
     defer label.deinit();
@@ -154,7 +169,7 @@ fn renderPicker(allocator: std.mem.Allocator, w: *std.Io.Writer, picker: picking
     const help = if (picker.kind == .confirm_day) "y confirms · any other key cancels confirmation · Esc/q returns" else if (is_plans) "j/k select · Enter open plan · Esc/q cancel · progress kept per plan" else "j/k select · type day number · Enter preview · Esc/q cancel";
     try w.writeAll(clipped(help, columns));
     try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
-    if (picker.invalid_input) try w.writeAll("Invalid day. Use a number within this plan; Backspace edits.") else if (picker.digit_count > 0) try w.print("Go to day: {s}", .{picker.digits[0..picker.digit_count]}) else try w.writeAll(clipped(options.notice, columns));
+    if (picker.digit_count > 0) try w.print("Go to day: {s}", .{picker.digits[0..picker.digit_count]}) else try w.writeAll(clipped(options.notice, columns));
 }
 
 pub const Terminal = struct {
@@ -173,6 +188,7 @@ pub const Terminal = struct {
         if (c.tcsetattr(0, c.TCSAFLUSH, &raw) != 0) return error.TerminalSetup;
         errdefer _ = c.tcsetattr(0, c.TCSAFLUSH, &original);
         interrupted.store(false, .monotonic);
+        decoder = .{};
         const terminal: Terminal = .{
             .original = original,
             .old_int = c.signal(c.SIGINT, stop),
@@ -183,13 +199,13 @@ pub const Terminal = struct {
             _ = c.signal(c.SIGINT, terminal.old_int);
             _ = c.signal(c.SIGTERM, terminal.old_term);
             _ = c.signal(c.SIGHUP, terminal.old_hup);
-            writeAll("\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
+            writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
         }
-        try writeAll("\x1b[?1049h\x1b[?25l");
+        try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
         return terminal;
     }
     pub fn deinit(self: *Terminal) void {
-        writeAll("\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
+        writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
         _ = c.tcsetattr(0, c.TCSAFLUSH, &self.original);
         _ = c.signal(c.SIGINT, self.old_int);
         _ = c.signal(c.SIGTERM, self.old_term);
@@ -201,6 +217,94 @@ pub fn run(allocator: std.mem.Allocator, rows: []const layout.Row, state: *stora
     var terminal = try Terminal.init();
     defer terminal.deinit();
     return runInTerminal(allocator, rows, state, options);
+}
+
+pub fn isInterrupted() bool {
+    return interrupted.load(.monotonic);
+}
+
+fn readKey() !?u8 {
+    // Each poll bounds the interbyte wait and returns control to resize/render.
+    // The decoder belongs to the terminal, not a menu or reader invocation.
+    while (!isInterrupted()) {
+        var descriptor = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
+        const ready = poll(@ptrCast(&descriptor), 1, 80);
+        if (ready < 0) {
+            if (isInterrupted()) return null;
+            return error.TerminalRead;
+        }
+        if (ready == 0) return decoder.timeout();
+        if ((descriptor.revents & (c.POLLHUP | c.POLLERR | c.POLLNVAL)) != 0) return error.TerminalRead;
+        var byte: u8 = 0;
+        if (c.read(0, &byte, 1) != 1) return error.TerminalRead;
+        if (decoder.feed(byte)) |key| {
+            if (key == 3) {
+                interrupted.store(true, .monotonic);
+                return null;
+            }
+            return key;
+        }
+        // Return even under an endless byte flood, keeping signal/resize live.
+        return null;
+    }
+    return null;
+}
+
+fn handlePicker(picker: *picking.Picker, key: u8, count: usize, redraw: *bool) ?picking.Action {
+    const kind = picker.kind;
+    const selected = picker.selected;
+    const digits = picker.digit_count;
+    const invalid = picker.invalid_input;
+    const action = picker.handle(key, count);
+    if (kind != picker.kind or selected != picker.selected or digits != picker.digit_count or invalid != picker.invalid_input) redraw.* = true;
+    return action;
+}
+
+/// Generic numbered menu, inside an already-owned application terminal.
+pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []const u8, labels: []const []const u8, initial: usize, number_base: usize) !?usize {
+    if (labels.len == 0) return error.EmptyMenu;
+    var picker: picking.Picker = .{ .kind = .plans, .selected = @min(initial, labels.len - 1), .numeric = true, .number_base = number_base };
+    var redraw = true;
+    var old_columns: usize = 0;
+    var old_height: usize = 0;
+    while (!isInterrupted()) {
+        var size: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
+        _ = c.ioctl(1, c.TIOCGWINSZ, &size);
+        const columns: usize = if (size.ws_col > 0) size.ws_col else 100;
+        const height: usize = if (size.ws_row > 0) size.ws_row else 30;
+        if (columns != old_columns or height != old_height) redraw = true;
+        if (redraw) {
+            var frame = std.Io.Writer.Allocating.init(allocator);
+            defer frame.deinit();
+            const w = &frame.writer;
+            try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ");
+            try w.writeAll(clipped(title, columns -| 14));
+            if (columns < 24 or height < 8) {
+                try w.writeAll("\r\nEnlarge terminal. Esc/q returns.");
+            } else {
+                try w.writeAll("\x1b[2;1H\x1b[38;2;134;145;156m");
+                try w.writeAll(clipped(description, columns));
+                const capacity = height - 6;
+                const first = @min(picker.selected -| (capacity / 2), labels.len -| capacity);
+                for (first..@min(labels.len, first + capacity)) |index| {
+                    try w.print("\x1b[{d};1H{s}{d}. ", .{ index - first + 3, if (index == picker.selected) "\x1b[38;2;210;178;116m▶ " else "\x1b[38;2;224;215;191m  ", index + number_base });
+                    try w.writeAll(clipped(labels[index], columns -| 9));
+                }
+                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
+                try w.writeAll(clipped("j/k select · type number · Enter opens · Esc/q back (or quit at Library)", columns));
+                try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
+                if (picker.digit_count > 0) try w.print("Selection: {s}", .{picker.digits[0..picker.digit_count]});
+            }
+            try writeAll(frame.written());
+            old_columns = columns;
+            old_height = height;
+            redraw = false;
+        }
+        const key = try readKey() orelse continue;
+        if (handlePicker(&picker, key, labels.len, &redraw)) |action| return action.choose_plan;
+        if (picker.kind == .closed) return null;
+    }
+    return null;
 }
 
 /// The caller owns terminal mode for the entire application, including plan changes.
@@ -253,10 +357,10 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             } else if (!usable) {
                 try w.writeAll("Kata: enlarge the terminal or press 1/2/3 to hide panes. q quits.");
             } else if (rows.len == 0) {
-                try w.writeAll(" K A T A  |  Plan complete. p chooses a plan; d restarts at a day; q quits.");
+                try w.writeAll(" K A T A  |  Plan complete. m opens Library; p chooses a plan; d restarts at a day; q quits.");
             } else {
                 try w.writeAll("\x1b[1;1H\x1b[1m\x1b[38;2;210;178;116m K A T A  \x1b[0m\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m");
-                const title = try std.fmt.allocPrint(allocator, "{s}  [{s}]", .{ options.title, if (state.linked) "LINKED" else "INDEPENDENT" });
+                const title = try std.fmt.allocPrint(allocator, "{s}  [{s}]{s}", .{ options.title, if (state.linked) "LINKED" else "INDEPENDENT", if (options.plan_mode) "" else " [FREE]" });
                 defer allocator.free(title);
                 try w.writeAll(clipped(title, columns -| 12));
                 try w.writeAll("\x1b[2;1H\x1b[38;2;134;145;156m");
@@ -285,36 +389,28 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
                 try w.writeAll(clipped(if (confirm) "Mark today's assignment complete? y confirms · any other key cancels" else "j/k scroll · Ctrl-d/u page · h/l focus · s sync · 1/2/3 panes · g/G ends", columns));
                 try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
-                try w.writeAll(clipped(if (options.plan_mode) "p plans · d choose day · c complete day · q save and quit" else "p plans · q save and quit  |  Ad-hoc passage: daily plan progress is unchanged.", columns));
+                try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · [/] previous/next chapter · p plans · q quit", columns));
             }
             try writeAll(frame.written());
             redraw = false;
         }
-        var event = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
-        const polled = poll(@ptrCast(&event), 1, 150);
-        if (polled < 0) continue;
-        if (polled == 0) continue;
-        if ((event.revents & (c.POLLHUP | c.POLLERR)) != 0) break;
-        var key: u8 = 0;
-        if (c.read(0, &key, 1) != 1) break;
-        if (key == 3) break;
+        const key = try readKey() orelse continue;
         if (picker.kind != .closed) {
             const menu_count = if (picker.kind == .plans) options.plans.len else options.plan.?.totalDays();
-            if (picker.handle(key, menu_count)) |action| {
+            if (handlePicker(&picker, key, menu_count, &redraw)) |action| {
                 remember(lines, tops, state);
                 return action;
             }
-            redraw = true;
             continue;
         }
         if (confirm) {
             confirm = false;
             if (key == 'y') {
-                state.complete(options.today) catch {
+                if (!try completeDay(state, options.today)) {
                     notice = "Already complete today. Your next assignment becomes available tomorrow.";
                     redraw = true;
                     continue;
-                };
+                }
                 remember(lines, tops, state);
                 try storage.save(allocator, options.io, options.state_path, state.*);
                 notice = "Completed and saved. Next assignment tomorrow; no catch-up workload.";
@@ -324,6 +420,16 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
         }
         switch (key) {
             'q', 3 => break,
+            'm', 'o', '[', ']' => {
+                if ((key == '[' or key == ']') and options.plan_mode) continue;
+                remember(lines, tops, state);
+                return switch (key) {
+                    'm' => .home,
+                    'o' => .open_place,
+                    '[' => .previous_chapter,
+                    else => .next_chapter,
+                };
+            },
             'j' => shift(&tops, state.*, 1, maxTop(lines, body_height)),
             'k' => shift(&tops, state.*, -1, maxTop(lines, body_height)),
             4, 'f' => shift(&tops, state.*, @intCast(@max(1, body_height / 2)), maxTop(lines, body_height)),

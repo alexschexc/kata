@@ -8,6 +8,9 @@ pub const cli = @import("cli.zig");
 pub const catalog = @import("catalog.zig");
 pub const picker = @import("picker.zig");
 pub const app = @import("app.zig");
+pub const library = @import("library.zig");
+pub const reading = @import("reading.zig");
+pub const start_menu = @import("start_menu.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

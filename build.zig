@@ -12,10 +12,13 @@ pub fn build(b: *std.Build) void {
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
+    // Zig's Mach-O linker is required for macOS; LLD handles ELF and PE.
+    const use_lld = target.result.ofmt != .macho;
     // Standard optimization options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "Strip executable debug information") orelse false;
     const defaults = b.addOptions();
     defaults.addOption([]const u8, "optina", @embedFile("config/optina.json"));
     defaults.addOption([]const u8, "gospels", @embedFile("config/gospels.json"));
@@ -65,12 +68,13 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "kata",
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = use_lld,
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
             // this package, which is why in this case we don't have to give it a name.
             .root_source_file = b.path("src/main.zig"),
+            .strip = strip,
             // Target and optimization levels must be explicitly wired in when
             // defining an executable or library (in the root module), and you
             // can also hardcode a specific target for an executable or library
@@ -128,7 +132,7 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = use_lld,
     });
 
     // A run step that will run the test executable.
@@ -140,7 +144,7 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = use_lld,
     });
 
     // A run step that will run the second test executable.

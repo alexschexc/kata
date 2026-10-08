@@ -1,0 +1,42 @@
+Kata bundled text sources and third-party notices
+
+Kata embeds text extracted from the installed kjv, grb, and vul datasets.
+Dataset and applet hashes, extraction details, and original text sizes are
+recorded in the source distribution's data provenance manifest. No applet,
+shell, AWK, pager, or runtime extraction program is included or required.
+
+Source interfaces:
+  kjv: installed King James text collection, including additional books.
+  grb: Greek collection and textual variants, from Luke Smith's grb.
+       https://github.com/LukeSmithxyz/grb
+  vul: Clementine Vulgate collection, from Luke Smith's vul.
+       https://github.com/LukeSmithxyz/vul
+
+The installed applet script headers declare their script code public domain.
+That declaration is not a blanket license for every text dataset or edition.
+No script code is used in Kata's native bundled text reader.
+
+SBL Greek New Testament (SBLGNT)
+  Edited by Michael W. Holmes.
+  The grb project identifies its New Testament dataset as SBLGNT.
+  Text and edition information: https://sblgnt.com/
+  Current license: Creative Commons Attribution 4.0 International (CC BY 4.0).
+  https://sblgnt.com/license/
+  https://creativecommons.org/licenses/by/4.0/
+  https://creativecommons.org/licenses/by/4.0/legalcode
+  Supplied without warranties as described in that license. Attribution does
+  not imply endorsement by the editor, publishers, or source projects.
+
+Technical changes in Kata:
+  Source text is embedded and indexed for native reference selection. Book
+  spelling aliases are normalized for navigation. Repeated Greek verse-label
+  records are joined with a single space in source order for aligned display.
+  An empty KJV Sirach 0:0 exporter sentinel is omitted. Verse-number differences
+  between editions have not been corrected or mapped. Source words are not
+  synthesized, translated, or modernized by Kata.
+
+Redistribution review:
+  The installed text snapshots' complete provenance and applicable rights,
+  including Septuagint editions, Vulgate transcription, and jurisdictional
+  KJV rights, must be confirmed before a public bundled distribution. These
+  notices do not assert that every dataset is public domain worldwide.

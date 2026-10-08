@@ -1,14 +1,20 @@
 # kata
 
-Zig prototype for reading `kjv`, `grb`, and `vul` in side-by-side terminal panes, with optional linked scrolling and configurable daily reading plans.
+Zig terminal reader with the complete installed `kjv`, `grb`, and `vul` text datasets embedded in one executable, optional linked scrolling, and configurable daily reading plans. No source applets, shell utilities, Python, or network are needed at runtime.
 
 Build: `zig build`
 
 Read a passage: `./zig-out/bin/kata --passage 'John:1'`
 
-Read today's assignment: `./zig-out/bin/kata`
+Open the library: `./zig-out/bin/kata`, then choose a title and **Free reading** or **Reading plans**.
 
 Inside the application: `p` chooses a plan; `d` chooses a reading day and previews importing progress. Use `j`/`k` and `Enter` in pickers, then `y` to confirm a day change. Each plan keeps its own progress, and the selected plan is remembered.
+
+Free reading has book/chapter/verse selection, `[`/`]` chapter navigation, and positions saved separately from plan progress. `m` returns to the library; `o` chooses another free-reading place. Choose **Bible** for the full combined book collection of the installed `kjv`, `grb`, and `vul` sources, including Old Testament, additional books, and Greek textual variants. The duplicate New Testament listing is hidden; legacy metadata remains compatible, and old book/chapter selections map into Bible. Sources without a selected book/chapter leave their pane empty; numbering variants are not inferred.
+
+Standalone x86-64 Linux executable: `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`. This is statically linked, with the original source text embedded uncompressed and queried directly in Zig.
+
+Unknown keys, unsupported terminal sequences, bracketed paste, and invalid numeric selections are ignored silently. `kata --licenses` shows embedded source credits and redistribution notes. See [PACKAGING.md](PACKAGING.md) for provenance, standalone verification, and cross-platform boundaries.
 
 Run unit tests: `zig build test --summary all`
 

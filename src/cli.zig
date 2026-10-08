@@ -46,19 +46,26 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
         if (std.mem.eql(u8, arg, "--help")) {
             try tui.writeAll(
                 "Kata · parallel terminal reader (Zig prototype)\n" ++
-                    "  kata                         today's configured reading\n" ++
-                    "  kata --passage 'John:1:1-3'   ad-hoc New Testament passage\n" ++
+                    "  kata                         library → title → free reading or plans\n" ++
+                    "  kata --passage 'Genesis:1'   ad-hoc passage from any available book\n" ++
                     "  --plan PATH                  custom JSON reading plan\n" ++
                     "  --state PATH                 isolated persistent state\n" ++
                     "  --dump                       plain-text output, no state writes\n" ++
+                    "  --licenses                   bundled text credits and license notices\n" ++
                     "  --check-plan                 print complete cycle, no state writes\n" ++
                     "  --complete                   explicitly mark today complete and exit\n" ++
                     "  --start-day N                preview starting at plan day N (1-based)\n" ++
                     "  --start-day N --confirm      save preceding days as complete; N pending\n" ++
                     "Keys: j/k, Ctrl-d/u, g/G; h/l or Tab focus; s linked scroll;\n" ++
+                    "      m library; o choose free-reading place; [/] previous/next chapter;\n" ++
                     "      p choose plan; d choose day; 1/2/3 sources; c then y complete; q quit.\n" ++
                     "Verse-label alignment only: numbering variants need explicit mapping.\n",
             );
+            return;
+        } else if (std.mem.eql(u8, arg, "--licenses")) {
+            try tui.writeAll(@embedFile("third_party_notices.txt"));
+            try tui.writeAll("\nBundled dataset provenance (build-time extraction):\n");
+            try tui.writeAll(@embedFile("data/provenance.json"));
             return;
         } else if (std.mem.eql(u8, arg, "--passage") or std.mem.eql(u8, arg, "--plan") or std.mem.eql(u8, arg, "--state") or std.mem.eql(u8, arg, "--start-day")) {
             i += 1;
@@ -159,13 +166,7 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
     }
     var rows: std.ArrayList(layout.Row) = .empty;
     for (references.items) |reference| {
-        var streams: [3][]const source.Verse = undefined;
-        for (source.tools, 0..) |tool, pane| {
-            streams[pane] = source.fetch(allocator, init.io, tool, reference) catch |err| {
-                std.debug.print("Source {s}, passage {s}: {s}\n", .{ tool, reference.query, @errorName(err) });
-                return err;
-            };
-        }
+        const streams = try source.streams(allocator, init.io, reference);
         try rows.appendSlice(allocator, try layout.alignVerses(allocator, streams));
     }
     if (rows.items.len == 0) return error.NoVerses;
