@@ -1,7 +1,11 @@
 const std = @import("std");
 
 pub const tools = [_][]const u8{ "kjv", "grb", "vul" };
-pub const Verse = struct { book: []const u8, chapter: u16, number: u16, text: []const u8 };
+/// A source's own chapter:verse label when it differs from the aligned row.
+pub const Label = struct { chapter: u16, number: u16 };
+/// `chapter`/`number` are the alignment position; `label` (when set) is the
+/// numbering printed by the source itself and is what the reader displays.
+pub const Verse = struct { book: []const u8, chapter: u16, number: u16, text: []const u8, label: ?Label = null };
 pub const Book = struct { name: []const u8, alias: []const u8 };
 pub const books = [_]Book{
     .{ .name = "Matthew", .alias = "Mat" },         .{ .name = "Mark", .alias = "Mark" },
@@ -146,11 +150,95 @@ pub fn fetch(allocator: std.mem.Allocator, io: std.Io, tool: []const u8, referen
     const entry = catalogEntry(reference.book) orelse return error.InvalidReference;
     const raw_book = entry.query_names[index] orelse return error.UnsupportedLocation;
     const colon = std.mem.indexOfScalar(u8, reference.query, ':') orelse reference.query.len;
+    if (index == 0 and std.mem.eql(u8, reference.book, "Psalms")) return fetchKjvPsalms(allocator, raw_book, reference);
     const rows = try @import("bundled.zig").query(allocator, index, raw_book, reference.query[colon..]);
     defer allocator.free(rows);
     const verses = try allocator.alloc(Verse, rows.len);
     for (rows, verses) |row, *verse| verse.* = .{ .book = reference.book, .chapter = row.chapter, .number = row.number, .text = row.text };
     return verses;
+}
+
+/// The KJV numbers Psalms by the Hebrew (Masoretic) text; grb and vul use the
+/// Greek/Latin (LXX/Vulgate) numbering, which Kata treats as authoritative.
+/// Maps a KJV psalm verse to its LXX psalm and an ordering position within it.
+/// Merged psalms place the second KJV psalm after the first; split psalms
+/// restart at 1. Verse numbers inside a psalm are not cross-mapped (the Greek
+/// and Latin count superscriptions as verses), so the KJV keeps its own labels.
+pub fn kjvPsalmToLxx(chapter: u16, verse: u16) ?Label {
+    const kjv_psalm_9_verses = 20;
+    const kjv_psalm_114_verses = 8;
+    return switch (chapter) {
+        1...9, 148...150 => .{ .chapter = chapter, .number = verse },
+        10 => .{ .chapter = 9, .number = verse + kjv_psalm_9_verses },
+        11...113, 117...146 => .{ .chapter = chapter - 1, .number = verse },
+        114 => .{ .chapter = 113, .number = verse },
+        115 => .{ .chapter = 113, .number = verse + kjv_psalm_114_verses },
+        116 => if (verse <= 9) .{ .chapter = 114, .number = verse } else .{ .chapter = 115, .number = verse - 9 },
+        147 => if (verse <= 11) .{ .chapter = 146, .number = verse } else .{ .chapter = 147, .number = verse - 11 },
+        else => null,
+    };
+}
+
+/// The reference's chapter/verse selection is in LXX numbering. Read the whole
+/// KJV Psalter, relocate each verse, and keep those the selection matches.
+fn fetchKjvPsalms(allocator: std.mem.Allocator, raw_book: []const u8, reference: Reference) ![]Verse {
+    const colon = std.mem.indexOfScalar(u8, reference.query, ':') orelse reference.query.len;
+    const selection = try @import("bundled.zig").Selection.init(reference.query[colon..]);
+    const rows = try @import("bundled.zig").query(allocator, 0, raw_book, "");
+    defer allocator.free(rows);
+    var verses: std.ArrayList(Verse) = .empty;
+    errdefer verses.deinit(allocator);
+    for (rows) |row| {
+        const at = kjvPsalmToLxx(row.chapter, row.number) orelse return error.MalformedOutput;
+        if (!selection.matches(at.chapter, at.number)) continue;
+        try verses.append(allocator, .{ .book = reference.book, .chapter = at.chapter, .number = at.number, .text = row.text, .label = .{ .chapter = row.chapter, .number = row.number } });
+    }
+    return verses.toOwnedSlice(allocator);
+}
+
+test "KJV Psalms follow Greek and Latin psalm numbering with their own verse labels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Case = struct { lxx: []const u8, first: Label, last: Label, count: usize };
+    for ([_]Case{
+        .{ .lxx = "Psalms:8", .first = .{ .chapter = 8, .number = 1 }, .last = .{ .chapter = 8, .number = 9 }, .count = 9 },
+        .{ .lxx = "Psalms:9", .first = .{ .chapter = 9, .number = 1 }, .last = .{ .chapter = 10, .number = 18 }, .count = 38 },
+        .{ .lxx = "Psalms:22", .first = .{ .chapter = 23, .number = 1 }, .last = .{ .chapter = 23, .number = 6 }, .count = 6 },
+        .{ .lxx = "Psalms:112", .first = .{ .chapter = 113, .number = 1 }, .last = .{ .chapter = 113, .number = 9 }, .count = 9 },
+        .{ .lxx = "Psalms:113", .first = .{ .chapter = 114, .number = 1 }, .last = .{ .chapter = 115, .number = 18 }, .count = 26 },
+        .{ .lxx = "Psalms:114", .first = .{ .chapter = 116, .number = 1 }, .last = .{ .chapter = 116, .number = 9 }, .count = 9 },
+        .{ .lxx = "Psalms:115", .first = .{ .chapter = 116, .number = 10 }, .last = .{ .chapter = 116, .number = 19 }, .count = 10 },
+        .{ .lxx = "Psalms:116", .first = .{ .chapter = 117, .number = 1 }, .last = .{ .chapter = 117, .number = 2 }, .count = 2 },
+        .{ .lxx = "Psalms:145", .first = .{ .chapter = 146, .number = 1 }, .last = .{ .chapter = 146, .number = 10 }, .count = 10 },
+        .{ .lxx = "Psalms:146", .first = .{ .chapter = 147, .number = 1 }, .last = .{ .chapter = 147, .number = 11 }, .count = 11 },
+        .{ .lxx = "Psalms:147", .first = .{ .chapter = 147, .number = 12 }, .last = .{ .chapter = 147, .number = 20 }, .count = 9 },
+        .{ .lxx = "Psalms:148", .first = .{ .chapter = 148, .number = 1 }, .last = .{ .chapter = 148, .number = 14 }, .count = 14 },
+    }) |case| {
+        const rows = try streams(a, std.testing.io, try Reference.init(a, case.lxx));
+        const kjv = rows[0];
+        try std.testing.expectEqual(case.count, kjv.len);
+        try std.testing.expectEqual(case.first, kjv[0].label.?);
+        try std.testing.expectEqual(case.last, kjv[kjv.len - 1].label.?);
+        for (kjv) |verse| try std.testing.expectEqual(kjv[0].chapter, verse.chapter);
+        // Greek and Latin are unchanged and keep their own numbering.
+        for (rows[1..]) |other| for (other) |verse| try std.testing.expect(verse.label == null);
+    }
+    const shepherd = try streams(a, std.testing.io, try Reference.init(a, "Psalms:22:1"));
+    try std.testing.expectEqualStrings("The LORD is my shepherd; I shall not want.", shepherd[0][0].text);
+    try std.testing.expect(std.mem.startsWith(u8, shepherd[2][0].text, "Psalmus David."));
+    const extra = try streams(a, std.testing.io, try Reference.init(a, "Psalms:151"));
+    try std.testing.expectEqual(@as(usize, 0), extra[0].len);
+    try std.testing.expect(extra[1].len > 0);
+    // Every KJV psalm verse appears exactly once under a distinct LXX position.
+    const whole = try streams(a, std.testing.io, try Reference.init(a, "Psalms"));
+    try std.testing.expectEqual(@as(usize, 2461), whole[0].len);
+    const aligned = try @import("layout.zig").alignVerses(a, whole);
+    var kjv_rows: usize = 0;
+    for (aligned) |row| if (row.texts[0] != null) {
+        kjv_rows += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 2461), kjv_rows);
 }
 
 test "native absent verse does not block translations with that label" {

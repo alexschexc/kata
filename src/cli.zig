@@ -60,6 +60,7 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
                     "Keys: j/k, Ctrl-d/u, g/G; h/l or Tab focus; s linked scroll;\n" ++
                     "      m library; o choose free-reading place; [/] previous/next chapter;\n" ++
                     "      p choose plan; d choose day; 1/2/3 sources; c then y complete; q quit.\n" ++
+                    "      / search focused translation; r results; n/N next/previous; x close search.\n" ++
                     "Verse-label alignment only: numbering variants need explicit mapping.\n",
             );
             return;
@@ -172,10 +173,17 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
     }
     if (rows.items.len == 0) return error.NoVerses;
     if (dump) {
-        try output(allocator, "{s}\nNOTE: aligned by verse labels; numbering variants are not inferred.\n", .{title});
+        try output(allocator, "{s}\nNOTE: aligned by verse labels; KJV Psalms follow Greek/Latin psalm numbering with KJV verse labels; other numbering variants are not inferred.\n", .{title});
         for (rows.items) |row| {
             try output(allocator, "\n{s} {d}:{d}\n", .{ row.book, row.chapter, row.number });
-            for (source.tools, 0..) |tool, pane| if (state.enabled[pane]) try output(allocator, "{s}: {s}\n", .{ tool, row.texts[pane] orelse "[not present under this verse label]" });
+            for (source.tools, 0..) |tool, pane| if (state.enabled[pane]) {
+                const text = row.texts[pane] orelse "[not present under this verse label]";
+                // A source label that differs from the row position (KJV Psalms)
+                // is printed as `tool (chapter:verse): text`.
+                if (row.labels[pane]) |own| {
+                    try output(allocator, "{s} ({d}:{d}): {s}\n", .{ tool, own.chapter, own.number, text });
+                } else try output(allocator, "{s}: {s}\n", .{ tool, text });
+            };
         }
         return;
     }

@@ -5,6 +5,7 @@ const picking = @import("picker.zig");
 const catalog = @import("catalog.zig");
 const scheduling = @import("plan.zig");
 const input = @import("input.zig");
+const search = @import("search.zig");
 var decoder: input.Decoder = .{};
 const backend = if (@import("builtin").os.tag == .windows) @import("terminal_windows.zig") else @import("terminal_posix.zig");
 pub const writeAll = backend.writeAll;
@@ -86,6 +87,8 @@ pub const Options = struct {
     active_plan: usize = 0,
     plan: ?*const scheduling.Plan = null,
     notice: []const u8 = "Verse-label alignment; numbering variants are not yet mapped.",
+    /// Owned by the application so results survive opening another chapter.
+    search: ?*search.State = null,
 };
 
 fn completeDay(state: *storage.State, today: i32) !bool {
@@ -242,6 +245,107 @@ pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []co
     return null;
 }
 
+const mark_on = "\x1b[48;2;210;178;116m\x1b[38;2;21;25;34m";
+const mark_off = "\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m";
+
+/// Writes full[from..to], highlighting query matches found from `search_from`.
+fn writeMarked(w: *std.Io.Writer, full: []const u8, from: usize, to: usize, query: *const search.Query, search_from: usize) !void {
+    var at = from;
+    var cursor = search_from;
+    while (search.next(full, query, cursor)) |range| {
+        if (range.start >= to) break;
+        cursor = range.end;
+        if (range.end <= at) continue;
+        const first = @max(range.start, at);
+        const last = @min(range.end, to);
+        try w.writeAll(full[at..first]);
+        try w.writeAll(mark_on);
+        try w.writeAll(full[first..last]);
+        try w.writeAll(mark_off);
+        at = last;
+    }
+    try w.writeAll(full[at..to]);
+}
+
+/// A reader cell with search matches highlighted. Cells are slices of the
+/// line's full "chapter:verse text", so matches split by wrapping still mark.
+fn markedCell(w: *std.Io.Writer, line: layout.Line, pane: usize, query: ?*const search.Query, width: usize) !void {
+    const text = line.cells[pane];
+    const q = query orelse return cell(w, text, width);
+    const full = line.texts[pane];
+    const visible = clipped(text, width);
+    const origin = @intFromPtr(full.ptr);
+    const begin = @intFromPtr(visible.ptr);
+    if (visible.len == 0 or begin < origin or begin + visible.len > origin + full.len or std.mem.endsWith(u8, full, layout.absent)) return cell(w, text, width);
+    const from = begin - origin;
+    const body = @min(full.len, (std.mem.indexOfScalar(u8, full, ' ') orelse full.len) + 1);
+    try writeMarked(w, full, from, from + visible.len, q, body);
+    for (layout.displayWidth(visible)..width) |_| try w.writeByte(' ');
+}
+
+fn locate(rows: []const layout.Row, hit: search.Hit) ?usize {
+    for (rows, 0..) |row, index| {
+        if (row.chapter == hit.chapter and row.number == hit.number and std.mem.eql(u8, row.book, hit.book())) return index;
+    }
+    return null;
+}
+
+fn renderPanel(allocator: std.mem.Allocator, w: *std.Io.Writer, finder: *const search.State, x: usize, width: usize, top: usize, bottom: usize) !void {
+    const inner = width -| 3;
+    const tool = @import("source.zig").tools[finder.pane];
+    var row = top;
+    const header = try std.fmt.allocPrint(allocator, "Search {s} · “{s}”", .{ tool, finder.submittedText() });
+    defer allocator.free(header);
+    try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ {s}", .{ row, x, if (finder.focus) "\x1b[1m\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m" });
+    try cell(w, header, inner);
+    try w.writeAll("\x1b[0m\x1b[48;2;21;25;34m");
+    row += 1;
+    const summary = try std.fmt.allocPrint(allocator, "{d} verses · {d} matches · {d}/{d}", .{ finder.hits.len, finder.occurrences, if (finder.hits.len == 0) 0 else finder.selected + 1, finder.hits.len });
+    defer allocator.free(summary);
+    try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ \x1b[38;2;134;145;156m", .{ row, x });
+    try cell(w, summary, inner);
+    row += 1;
+    const capacity = (bottom + 1) -| row;
+    if (capacity == 0) return;
+    const first = @min(finder.selected -| (capacity / 2), finder.hits.len -| capacity);
+    for (0..capacity) |offset| {
+        try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ ", .{ row + offset, x });
+        const index = first + offset;
+        if (index >= finder.hits.len) {
+            try cell(w, "", inner);
+            continue;
+        }
+        const hit = finder.hits[index];
+        const chosen = index == finder.selected;
+        const own = hit.label.chapter != hit.chapter or hit.label.number != hit.number;
+        const place = if (own)
+            try std.fmt.allocPrint(allocator, "{s}{s} {d}:{d} ({s} {d}:{d}) ", .{ if (chosen) "▶ " else "  ", hit.book(), hit.chapter, hit.number, tool, hit.label.chapter, hit.label.number })
+        else
+            try std.fmt.allocPrint(allocator, "{s}{s} {d}:{d} ", .{ if (chosen) "▶ " else "  ", hit.book(), hit.chapter, hit.number });
+        defer allocator.free(place);
+        try w.writeAll(if (chosen) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
+        const place_visible = clipped(place, inner);
+        try w.writeAll(place_visible);
+        var used = layout.displayWidth(place_visible);
+        try w.writeAll("\x1b[38;2;224;215;191m");
+        // Show a little context before the first match, from a word start.
+        var from: usize = 0;
+        if (hit.match.start > 24) {
+            from = hit.match.start - 24;
+            while (from < hit.match.start and (hit.text[from] & 0xC0) == 0x80) from += 1;
+            if (std.mem.indexOfScalarPos(u8, hit.text[0..hit.match.start], from, ' ')) |space| from = space + 1;
+            if (used + 1 < inner) {
+                try w.writeAll("…");
+                used += 1;
+            }
+        }
+        const visible = clipped(hit.text[from..], inner -| used);
+        try writeMarked(w, hit.text, from, from + visible.len, &finder.active, 0);
+        used += layout.displayWidth(visible);
+        for (used..inner) |_| try w.writeByte(' ');
+    }
+}
+
 /// The caller owns terminal mode for the entire application, including plan changes.
 pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, state: *storage.State, options: Options) !?picking.Action {
     var wrapping = std.heap.ArenaAllocator.init(allocator);
@@ -256,7 +360,16 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
     var confirm = false;
     var picker: picking.Picker = .{};
     var notice = options.notice;
+    const finder = options.search;
+    var pending_row: ?usize = null;
+    if (finder) |f| if (f.reveal) {
+        // A search result opened this reading: show it in the searched source.
+        f.reveal = false;
+        state.enabled[f.pane] = true;
+        state.focus = f.pane;
+    };
     if (!state.enabled[state.focus]) moveFocus(state, 1);
+    defer decoder.text = false;
 
     while (!isInterrupted()) {
         const size = try backend.size();
@@ -267,11 +380,14 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             screen_rows = height;
             redraw = true;
         }
+        const panel_open = if (finder) |f| f.open else false;
+        const panel_width: usize = if (!panel_open) 0 else if (columns >= 72) @min(64, @max(30, columns * 2 / 5)) else columns;
+        const reader_visible = panel_width < columns;
         const count = selectedCount(state.enabled);
-        const pane_width = columns / count -| 3;
+        const pane_width = (columns - panel_width) / count -| 3;
         const body_height = height -| 6;
-        const usable = pane_width >= 12 and body_height >= 3;
-        if (usable and (pane_width != old_width or height != old_height)) {
+        const usable = body_height >= 3 and (!reader_visible or pane_width >= 12);
+        if (usable and reader_visible and (pane_width != old_width or height != old_height)) {
             remember(lines, tops, state);
             _ = wrapping.reset(.retain_capacity);
             lines = try layout.renderLines(wrapping.allocator(), rows, pane_width, state.enabled);
@@ -281,11 +397,24 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             old_height = height;
             redraw = true;
         }
+        if (pending_row) |target| if (lines.len > 0 and old_width != 0) {
+            pending_row = null;
+            var line_index: usize = 0;
+            for (lines, 0..) |line, index| if (line.row == target) {
+                line_index = index;
+                break;
+            };
+            const top = @min(line_index, maxTop(lines, body_height));
+            if (state.linked) tops = .{ top, top, top } else tops[state.focus] = top;
+            redraw = true;
+        };
         if (redraw) {
             var frame = std.Io.Writer.Allocating.init(allocator);
             defer frame.deinit();
             const w = &frame.writer;
             try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m");
+            const prompting = if (finder) |f| f.prompt else false;
+            const panel_focus = if (finder) |f| f.open and f.focus else false;
             if (picker.kind != .closed) {
                 try renderPicker(allocator, w, picker, options, columns, height);
             } else if (!usable) {
@@ -299,35 +428,57 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 try w.writeAll(clipped(title, columns -| 12));
                 try w.writeAll("\x1b[2;1H\x1b[38;2;134;145;156m");
                 try w.writeAll(clipped(notice, columns));
-                try w.writeAll("\x1b[3;1H");
-                for (0..3) |pane| {
-                    if (!state.enabled[pane]) continue;
-                    const row_index = if (lines.len > 0) lines[@min(tops[pane], lines.len - 1)].row else 0;
-                    const row = rows[row_index];
-                    const label = try std.fmt.allocPrint(allocator, "{s}{s} · {s} {d}", .{ if (state.focus == pane) "▶ " else "  ", @import("source.zig").tools[pane], row.book, row.chapter });
-                    defer allocator.free(label);
-                    try w.writeAll(if (state.focus == pane) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
-                    try cell(w, label, pane_width);
-                    try w.writeAll(" │ ");
-                }
-                for (0..body_height) |line_index| {
-                    try w.print("\x1b[{d};1H", .{line_index + 4});
+                const highlight = if (finder) |f| f.highlight() else null;
+                if (reader_visible) {
+                    try w.writeAll("\x1b[3;1H");
                     for (0..3) |pane| {
                         if (!state.enabled[pane]) continue;
-                        try w.writeAll("\x1b[38;2;224;215;191m");
-                        const at = tops[pane] + line_index;
-                        try cell(w, if (at < lines.len) lines[at].cells[pane] else "", pane_width);
-                        try w.writeAll("\x1b[38;2;74;87;101m │ ");
+                        const row_index = if (lines.len > 0) lines[@min(tops[pane], lines.len - 1)].row else 0;
+                        const row = rows[row_index];
+                        const label = try std.fmt.allocPrint(allocator, "{s}{s} · {s} {d}", .{ if (state.focus == pane) "▶ " else "  ", @import("source.zig").tools[pane], row.book, row.label(pane).chapter });
+                        defer allocator.free(label);
+                        try w.writeAll(if (state.focus == pane and !panel_focus) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
+                        try cell(w, label, pane_width);
+                        try w.writeAll(" │ ");
+                    }
+                    for (0..body_height) |line_index| {
+                        try w.print("\x1b[{d};1H", .{line_index + 4});
+                        for (0..3) |pane| {
+                            if (!state.enabled[pane]) continue;
+                            try w.writeAll("\x1b[38;2;224;215;191m");
+                            const at = tops[pane] + line_index;
+                            const query = if (highlight) |h| (if (h.pane == pane) h.query else null) else null;
+                            if (at < lines.len) try markedCell(w, lines[at], pane, query, pane_width) else try cell(w, "", pane_width);
+                            try w.writeAll("\x1b[38;2;74;87;101m │ ");
+                        }
                     }
                 }
+                if (panel_open) try renderPanel(allocator, w, finder.?, columns - panel_width + 1, panel_width, 3, height - 2);
                 try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
-                try w.writeAll(clipped(if (confirm) "Mark today's assignment complete? y confirms · any other key cancels" else "j/k scroll · Ctrl-d/u page · h/l focus · s sync · 1/2/3 panes · g/G ends", columns));
+                const help = if (confirm)
+                    "Mark today's assignment complete? y confirms · any other key cancels"
+                else if (prompting)
+                    "Type a word or phrase · matches highlight as you type · Enter searches the whole source · Esc cancels"
+                else if (panel_focus)
+                    "j/k select · Enter open · n/N next/previous · Tab/Esc back to reader · / new search · x close search"
+                else if (panel_open)
+                    "j/k scroll · h/l focus · / search · r results · n/N next/previous match · x close search"
+                else
+                    "j/k scroll · Ctrl-d/u page · h/l focus · s sync · 1/2/3 panes · g/G ends · / search";
+                try w.writeAll(clipped(help, columns));
                 try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
-                try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · [/] previous/next chapter · p plans · q quit", columns));
+                if (prompting) {
+                    const f = finder.?;
+                    const line = try std.fmt.allocPrint(allocator, "/{s}█   searching {s}", .{ f.promptText(), @import("source.zig").tools[f.prompt_pane] });
+                    defer allocator.free(line);
+                    try w.writeAll("\x1b[38;2;224;215;191m");
+                    try w.writeAll(clipped(line, columns));
+                } else try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · [/] previous/next chapter · p plans · q quit", columns));
             }
             try writeAll(frame.written());
             redraw = false;
         }
+        decoder.text = if (finder) |f| f.prompt and picker.kind == .closed else false;
         const key = try readKey() orelse continue;
         if (picker.kind != .closed) {
             const menu_count = if (picker.kind == .plans) options.plans.len else options.plan.?.totalDays();
@@ -351,6 +502,85 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             }
             redraw = true;
             continue;
+        }
+        // Search prompt and results panel take keys before the reader.
+        var want_jump = false;
+        if (finder) |f| {
+            if (f.prompt) {
+                switch (key) {
+                    27 => f.cancel(),
+                    10, 13 => {
+                        const query = try allocator.dupe(u8, f.promptText());
+                        f.submit() catch |err| {
+                            notice = try std.fmt.allocPrint(allocator, "Search failed: {s}", .{@errorName(err)});
+                        };
+                        if (f.open and f.hits.len == 0) {
+                            notice = try std.fmt.allocPrint(allocator, "No matches for “{s}” in {s}.", .{ query, @import("source.zig").tools[f.pane] });
+                            f.close();
+                        } else if (f.open) {
+                            // Start the list at the first result in this reading, if any.
+                            for (f.hits, 0..) |hit, index| if (locate(rows, hit) != null) {
+                                f.selected = index;
+                                break;
+                            };
+                            notice = try std.fmt.allocPrint(allocator, "{d} verses contain “{s}” in {s}. Enter opens a result; n/N steps through them.", .{ f.hits.len, query, @import("source.zig").tools[f.pane] });
+                        }
+                    },
+                    127, 8 => f.backspace(),
+                    21 => f.clear(),
+                    else => f.input(key),
+                }
+                redraw = true;
+                continue;
+            }
+            if (f.open and f.focus) {
+                const page = @max(1, body_height / 2);
+                switch (key) {
+                    'j' => f.selected = @min(f.hits.len -| 1, f.selected + 1),
+                    'k' => f.selected -|= 1,
+                    4, 'f' => f.selected = @min(f.hits.len -| 1, f.selected + page),
+                    21, 'b' => f.selected -|= page,
+                    'g' => f.selected = 0,
+                    'G' => f.selected = f.hits.len -| 1,
+                    10, 13 => want_jump = true,
+                    'n' => {
+                        f.selected = @min(f.hits.len -| 1, f.selected + 1);
+                        want_jump = true;
+                    },
+                    'N' => {
+                        f.selected -|= 1;
+                        want_jump = true;
+                    },
+                    27, 9, 'q', 'h' => f.focus = false,
+                    'x' => f.close(),
+                    '/' => f.begin(state.focus),
+                    else => continue,
+                }
+                if (!want_jump) {
+                    redraw = true;
+                    continue;
+                }
+            } else if (f.open and (key == 'n' or key == 'N')) {
+                if (key == 'n') f.selected = @min(f.hits.len -| 1, f.selected + 1) else f.selected -|= 1;
+                want_jump = true;
+            }
+            if (want_jump) {
+                const hit = f.current() orelse continue;
+                if (locate(rows, hit)) |target| {
+                    if (!state.enabled[f.pane]) {
+                        remember(lines, tops, state);
+                        state.enabled[f.pane] = true;
+                        old_width = 0;
+                    }
+                    state.focus = f.pane;
+                    pending_row = target;
+                    redraw = true;
+                    continue;
+                }
+                remember(lines, tops, state);
+                f.reveal = true;
+                return .{ .open_location = hit.location() };
+            }
         }
         switch (key) {
             'q', 3 => break,
@@ -392,6 +622,22 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             },
             'd' => if (options.plan_mode and options.plan != null) {
                 picker = .{ .kind = .days, .selected = @min(options.plan.?.totalDays() - 1, state.assignment(options.today) % options.plan.?.totalDays()) };
+            },
+            '/' => {
+                const f = finder orelse continue;
+                if (rows.len == 0) continue;
+                f.begin(state.focus);
+            },
+            'r' => {
+                const f = finder orelse continue;
+                if (!f.open) continue;
+                f.focus = true;
+            },
+            'x' => {
+                const f = finder orelse continue;
+                if (!f.open) continue;
+                f.close();
+                notice = "Search closed.";
             },
             else => continue,
         }

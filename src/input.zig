@@ -10,6 +10,9 @@ pub const Decoder = struct {
     csi_length: usize = 0,
     paste_start: bool = false,
     paste_match: usize = 0,
+    /// Text entry (search prompt): printable ASCII and UTF-8 bytes are
+    /// delivered too. Escape/control-string/paste framing is unchanged.
+    text: bool = false,
 
     pub fn feed(self: *Decoder, byte: u8) ?u8 {
         if (byte == 27 and (self.mode == .csi or self.mode == .ss3 or self.mode == .intermediate)) {
@@ -27,9 +30,10 @@ pub const Decoder = struct {
                         else => if (std.unicode.utf8ByteSequenceLength(byte)) |length| {
                             self.remaining = @intCast(length - 1);
                             self.mode = .unicode;
+                            if (self.text) return byte;
                         } else |_| {},
                     }
-                } else if (recognized(byte)) return byte;
+                } else if (recognized(byte) or (self.text and byte >= 0x20 and byte < 0x7f)) return byte;
             },
             .escape => switch (byte) {
                 '[' => self.beginCsi(),
@@ -72,6 +76,7 @@ pub const Decoder = struct {
                 // byte masquerading as a continuation must not execute.
                 self.remaining -= 1;
                 if (self.remaining == 0) self.mode = .plain;
+                if (self.text and (byte & 0xC0) == 0x80) return byte;
             },
             .paste => {
                 const end = "\x1b[201~";
@@ -104,9 +109,24 @@ pub const Decoder = struct {
 
 pub fn recognized(byte: u8) bool {
     return switch (byte) {
-        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', '[', ']', 'f', 'b', 'g', 'G', 's', 'p', 'd' => true,
+        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', '[', ']', 'f', 'b', 'g', 'G', 's', 'p', 'd', '/', 'N', 'r', 'x' => true,
         else => false,
     };
+}
+
+test "text mode delivers printable and UTF-8 bytes but keeps sequences inert" {
+    var decoder: Decoder = .{ .text = true };
+    var got: [32]u8 = undefined;
+    var n: usize = 0;
+    for ("a Z\x1b[A\xce\xbb\x1b]0;x\x07!") |byte| if (decoder.feed(byte)) |key| {
+        got[n] = key;
+        n += 1;
+    };
+    try std.testing.expectEqualStrings("a Z\xce\xbb!", got[0..n]);
+    decoder.text = false;
+    try std.testing.expect(decoder.feed('a') == null);
+    try std.testing.expect(decoder.feed(0xce) == null);
+    try std.testing.expect(decoder.feed(0xbb) == null);
 }
 
 test "timeouts distinguish lone Escape from malformed sequences and preserve paste quarantine" {

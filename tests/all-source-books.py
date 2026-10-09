@@ -13,19 +13,24 @@ def run(args, env):
     assert result.returncode == 0, (args, result.stderr)
     return result.stdout
 
-def parse_dump(dump):
+def parse_dump(dump, rows=None):
+    """Map each source's own chapter:verse label to its text. A pane printed as
+    `kjv (c:v): text` (KJV Psalms in Greek/Latin psalm order) keeps its own
+    label. `rows`, when given, records the aligned row chapter for each label."""
     found = {source: {} for source in TOOLS}
     key = None
     for record in dump.splitlines():
         header = re.fullmatch(r'.+ (\d+):(\d+)', record)
         if header:
             key = tuple(map(int, header.groups()))
-        for source in TOOLS:
-            prefix = source+': '
-            if record.startswith(prefix) and key is not None:
-                text = record[len(prefix):]
-                if text != '[not present under this verse label]':
-                    found[source][key] = text
+        line = re.fullmatch(r'(kjv|grb|vul)(?: \((\d+):(\d+)\))?: (.*)', record)
+        if line and key is not None:
+            source, c, v, text = line.groups()
+            own = (int(c), int(v)) if c else key
+            if text != '[not present under this verse label]':
+                found[source][own] = text
+                if rows is not None:
+                    rows[source][own] = key[0]
     return found
 
 with tempfile.TemporaryDirectory(prefix='kata-all-source-books-') as folder:
@@ -57,17 +62,19 @@ with tempfile.TemporaryDirectory(prefix='kata-all-source-books-') as folder:
             # Query by exact listed name: Kata resolves source spelling aliases.
             if name not in cache:
                 dump = run([str(BIN), '--state', folder+'/state.json', '--passage', name, '--dump'], native_env)
-                found = parse_dump(dump)
+                row_chapters = {source: {} for source in TOOLS}
+                found = parse_dump(dump, row_chapters)
                 cache[name] = found
-                canonical_books[dump.splitlines()[0]] = found
+                canonical_books[dump.splitlines()[0]] = (found, row_chapters)
             assert cache[name][tool] == expected, (tool, name, 'verse text or labels differ', len(expected), len(cache[name][tool]))
             entries.append({'tool': tool, 'name': name, 'verses': len(expected), 'chapters': sorted({c for c, _ in expected})})
         print('PASS', tool, totals[tool], 'complete books', flush=True)
     chapters_verified = 0
-    for name, whole in (canonical_books.items() if '--chapters' in sys.argv else []):
-        chapters = sorted({c for source in TOOLS for c, _ in whole[source]})
+    for name, (whole, row_chapters) in (canonical_books.items() if '--chapters' in sys.argv else []):
+        # Chapter queries use the aligned (Greek/Latin for Psalms) chapter.
+        chapters = sorted({c for source in TOOLS for c in row_chapters[source].values()})
         for chapter in chapters:
-            expected = {source: {key: text for key, text in whole[source].items() if key[0] == chapter} for source in TOOLS}
+            expected = {source: {key: text for key, text in whole[source].items() if row_chapters[source][key] == chapter} for source in TOOLS}
             dump = run([str(BIN), '--state', folder+'/state.json', '--passage', name+':'+str(chapter), '--dump'], native_env)
             assert parse_dump(dump) == expected, (name, chapter, 'chapter query differs from whole book')
             chapters_verified += 1

@@ -102,7 +102,13 @@ pub fn choosePlace(io: std.Io, initial: library.Location) !?library.Location {
                 if (verses.len == 0) return error.NoVerses;
                 var labels: std.ArrayList([]const u8) = .empty;
                 try labels.append(allocator, "Resume saved position, or chapter beginning if new");
-                for (verses) |verse| try labels.append(allocator, try std.fmt.allocPrint(allocator, "Verse {d} · {s}", .{ verse.number, verse.text }));
+                for (verses) |verse| {
+                    const label = if (verse.label) |own|
+                        try std.fmt.allocPrint(allocator, "Verse {d}:{d} · {s}", .{ own.chapter, own.number, verse.text })
+                    else
+                        try std.fmt.allocPrint(allocator, "Verse {d} · {s}", .{ verse.number, verse.text });
+                    try labels.append(allocator, label);
+                }
                 const verse = try tui.choose(allocator, "Choose starting verse", query, labels.items, 0, 0) orelse {
                     stage = .chapter;
                     continue;

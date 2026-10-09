@@ -8,8 +8,17 @@ pub const Row = struct {
     chapter: u16,
     number: u16,
     texts: [3]?[]const u8 = .{ null, null, null },
+    /// A pane's own chapter:verse when it differs from the row position
+    /// (KJV Psalms follow the Greek/Latin psalm order but keep KJV labels).
+    labels: [3]?source.Label = .{ null, null, null },
+
+    pub fn label(self: Row, pane: usize) source.Label {
+        return self.labels[pane] orelse .{ .chapter = self.chapter, .number = self.number };
+    }
 };
-pub const Line = struct { cells: [3][]const u8, row: usize };
+/// `cells` are wrapped slices of `texts`, the full "c:v text" per pane.
+pub const absent = "[not present under this verse label]";
+pub const Line = struct { cells: [3][]const u8, row: usize, texts: [3][]const u8 = .{ "", "", "" } };
 
 pub fn alignVerses(allocator: std.mem.Allocator, streams: [3][]const source.Verse) ![]Row {
     var rows: std.ArrayList(Row) = .empty;
@@ -29,6 +38,7 @@ pub fn alignVerses(allocator: std.mem.Allocator, streams: [3][]const source.Vers
             }
             if (rows.items[found.?].texts[pane] != null) return error.DuplicateAlignedVerse;
             rows.items[found.?].texts[pane] = verse.text;
+            rows.items[found.?].labels[pane] = verse.label;
         }
     }
     // Each call assembles a single book/passage. Session assembly preserves passage order.
@@ -96,14 +106,17 @@ pub fn renderLines(allocator: std.mem.Allocator, rows: []const Row, width: usize
     errdefer output.deinit(allocator);
     for (rows, 0..) |row, index| {
         var wrapped: [3][][]const u8 = undefined;
+        var texts: [3][]const u8 = undefined;
         var height: usize = 1;
         for (0..3) |pane| {
-            const text = try std.fmt.allocPrint(allocator, "{d}:{d} {s}", .{ row.chapter, row.number, row.texts[pane] orelse "[not present under this verse label]" });
+            const own = row.label(pane);
+            const text = try std.fmt.allocPrint(allocator, "{d}:{d} {s}", .{ own.chapter, own.number, row.texts[pane] orelse absent });
+            texts[pane] = text;
             wrapped[pane] = try wrap(allocator, text, width);
             if (enabled[pane]) height = @max(height, wrapped[pane].len);
         }
         for (0..height) |line_index| {
-            var line: Line = .{ .cells = .{ "", "", "" }, .row = index };
+            var line: Line = .{ .cells = .{ "", "", "" }, .row = index, .texts = texts };
             for (0..3) |pane| {
                 if (line_index < wrapped[pane].len) line.cells[pane] = wrapped[pane][line_index];
             }
@@ -124,6 +137,15 @@ test "alignment uses verse labels and leaves a missing cell" {
     try std.testing.expectEqual(@as(usize, 2), rows.len);
     try std.testing.expect(rows[0].texts[1] == null);
     try std.testing.expectEqualStrings("τρίτος", rows[1].texts[1].?);
+}
+
+test "panes print their own verse labels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const rows = [_]Row{.{ .book = "Psalms", .chapter = 22, .number = 1, .texts = .{ "kjv", "grb", "vul" }, .labels = .{ .{ .chapter = 23, .number = 1 }, null, null } }};
+    const lines = try renderLines(arena.allocator(), &rows, 40, .{ true, true, true });
+    try std.testing.expectEqualStrings("23:1 kjv", lines[0].cells[0]);
+    try std.testing.expectEqualStrings("22:1 grb", lines[0].cells[1]);
 }
 
 test "wrapping respects UTF-8 boundaries and combining marks" {

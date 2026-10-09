@@ -9,6 +9,7 @@ const library = @import("library.zig");
 const reading = @import("reading.zig");
 const start = @import("start_menu.zig");
 const paths = @import("platform_paths.zig");
+const search = @import("search.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -91,6 +92,8 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     var last_free: library.Location = reading.loadBookmark(allocator, init.io, base) catch .{};
     var active: ?start.Choice = if (initial_passage) |raw| .{ .free = try reading.fromReference(allocator, raw) } else if (explicit_plan != null) .{ .plan = selected } else null;
     var override = initial_passage;
+    var finder: search.State = .{};
+    defer finder.deinit();
     var terminal = try tui.Terminal.init();
     defer terminal.deinit();
     while (!tui.isInterrupted()) {
@@ -143,6 +146,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             .active_plan = selected,
             .plan = &plans.entries.items[selected].plan,
             .notice = notice,
+            .search = &finder,
         });
         try storage.save(allocator, init.io, path, state);
         if (free != null) try reading.saveBookmark(allocator, init.io, base, last_free) else {
@@ -174,6 +178,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
                 target = .{ .free = next };
             },
             .choose_plan => |index| target = .{ .plan = index },
+            .open_location => |at| target = .{ .free = at },
             .start_day => |day| {
                 if (free != null) continue;
                 changed_day = day;
@@ -216,6 +221,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         };
         if (target_free) |at| reading.anchor(validated.rows, &changed, at) catch {
             notice = "Starting verse unavailable. Previous view retained.";
+            finder.reveal = false;
             continue;
         };
         try storage.save(allocator, init.io, target_path, changed);
@@ -225,6 +231,6 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         }
         active = target;
         override = null;
-        notice = if (changed_day != null) "Reading position saved. Preceding days count as complete; selected day is pending." else "Reading selected. Free-reading positions and plan progress are kept separately; verse-number variants are unmapped.";
+        notice = if (action.? == .open_location) "Search result opened in free reading · n/N next/previous · r results · x closes search" else if (changed_day != null) "Reading position saved. Preceding days count as complete; selected day is pending." else "Reading selected. Free-reading positions and plan progress are kept separately; verse-number variants are unmapped.";
     }
 }

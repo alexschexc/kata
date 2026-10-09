@@ -32,6 +32,8 @@ Normal startup opens **Library → title → Reading mode**. Choose **Bible** fo
 
 Book names, source query aliases, and chapter availability were discovered from the original source commands. Translation collections differ: a source without the chosen book/chapter/verse contributes no verses, while the available sources remain readable. Malformed passage references remain errors rather than fabricated or substituted text. Variant editions remain separate books; verse-number differences are not automatically mapped.
 
+Psalms follow the Greek (LXX) and Latin (Vulgate) numbering. The KJV pane, which uses Hebrew (Masoretic) numbering, is placed under the matching Greek/Latin psalm: Psalm 9 holds KJV 9–10, 10–112 hold KJV 11–113, 113 holds KJV 114–115, 114 and 115 hold KJV 116:1–9 and 116:10–19, 116–145 hold KJV 117–146, 146 and 147 hold KJV 147:1–11 and 147:12–20, and 148–150 are identical. Greek Psalm 151 has no KJV text. Each translation keeps its own verse numbers: KJV lines show their KJV chapter:verse (e.g. `23:1` under Psalm 22), and `--dump` prints them as `kjv (23:1): …`. Because the Greek and Latin count superscriptions as verses and the KJV does not, verses within a psalm align by label, not by content.
+
 The installed editions list 79 KJV books, 87 Greek books, and 68 Latin books, forming 89 distinct canonical entries. Greek records with repeated verse labels are displayed together under that label, preserving their text in source order with a space between records. This preserves source content without claiming a corrected verse-number mapping. Sirach's chapter-zero prologue is accessible; chapter choices and navigation use observed chapter availability rather than assuming every number exists in every source.
 
 For a standalone, size-optimized stripped x86-64 Linux executable, build with `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`. This statically links musl and embeds the original text uncompressed. Python scripts under `tests/` are extraction/provenance and verification tools only. `--licenses` displays embedded source credits and licensing notes.
@@ -101,6 +103,18 @@ Use the same `--state` for a command-line import and subsequent launches when us
 | `Esc` / `q` in a picker | Cancel and return to the reader |
 | `c`, then `y` | Explicitly confirm today's completion in plan mode |
 | `q`, or `Ctrl-c` | Save position and leave the TUI |
+| `/` | Search the focused translation; type a word or phrase, `Enter` searches, `Esc` cancels |
+| `r` | Focus the search results panel |
+| `n` / `N` | Open the next/previous search result |
+| `x` | Close search and clear highlighting |
+
+## Word search
+
+Press `/` in any reader. A Vim-style prompt opens in the bottom bar and searches the focused pane's translation only (KJV, Greek, or Latin). As you type, matches in the visible text are highlighted. `Enter` searches that whole source and opens a results panel on the right listing every verse that contains the term, with the verse/match counts and a context snippet. `Ctrl-u` clears the prompt; `Backspace` deletes.
+
+In the panel: `j`/`k` (or `Ctrl-d`/`Ctrl-u`, `g`/`G`) select, `Enter` opens the selected verse, `n`/`N` open the next/previous result, `Tab`/`Esc` return to the reader, and `x` closes the search. Opening a result in the current reading scrolls to it; a result elsewhere opens that chapter in free reading with the panel still open. Every occurrence stays highlighted in the searched pane. On narrow terminals (under 72 columns) the panel takes the whole width while focused.
+
+Matching is case- and accent-insensitive and matches word starts: `love` finds *love*, *loved*, *loveth*, but not *glove*; `λογος` finds *λόγος*, *Λόγος*, *λόγου*. Multi-word phrases match with single spaces between words. Different inflected forms of the same word with different stems are not linked: no lemma or concordance data is used. KJV results in Psalms are listed under the Greek/Latin psalm number with the KJV label in parentheses, for example `Psalms 22:1 (kjv 23:1)`.
 
 Corresponding verse labels share a row height, with padding under shorter translations. Linked scrolling operates over this common layout; independent scrolling moves only the focused pane. Resizing rewraps text while preserving verse-row anchors. The terminal's original input mode and screen are restored on exit and handled termination signals.
 

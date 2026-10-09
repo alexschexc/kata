@@ -85,6 +85,48 @@ fn contains(text: []const u8, value: u16) bool {
     return false;
 }
 
+/// One verse record of a source, in embedded (source) order.
+pub const Record = struct { book: []const u8, chapter: u16, number: u16, text: []const u8 };
+
+/// Sequential scan of every non-empty verse record in one source, borrowing
+/// the embedded text. `book` is the source's own book name (span name).
+pub const Records = struct {
+    data: Dataset,
+    span: usize = 0,
+    lines: ?std.mem.SplitIterator(u8, .scalar) = null,
+
+    pub fn next(self: *Records) ?Record {
+        while (true) {
+            if (self.lines == null) {
+                if (self.span >= self.data.spans.len) return null;
+                const span = self.data.spans[self.span];
+                self.lines = std.mem.splitScalar(u8, self.data.text[span.start..span.end], '\n');
+            }
+            const raw_line = self.lines.?.next() orelse {
+                self.lines = null;
+                self.span += 1;
+                continue;
+            };
+            const line = std.mem.trimEnd(u8, raw_line, "\r");
+            var fields = std.mem.splitScalar(u8, line, '\t');
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            const c = std.fmt.parseInt(u16, fields.next() orelse continue, 10) catch continue;
+            const label = fields.next() orelse continue;
+            const dash = std.mem.indexOfScalar(u8, label, '-') orelse label.len;
+            const v = std.fmt.parseInt(u16, label[0..dash], 10) catch continue;
+            const text = fields.rest();
+            if (text.len == 0) continue;
+            return .{ .book = self.data.spans[self.span].book, .chapter = c, .number = v, .text = text };
+        }
+    }
+};
+
+pub fn records(source_index: usize) Records {
+    return .{ .data = datasets[source_index] };
+}
+
 /// Pure native retrieval from immutable embedded TSV, using generated chapter
 /// byte spans. No I/O, subprocesses, filesystem access, or runtime cache.
 /// Text borrows embedded bytes except merged Greek labels, which use allocator;

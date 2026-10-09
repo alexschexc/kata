@@ -8,7 +8,13 @@ TOOLS = ('kjv', 'grb', 'vul')
 metadata = json.loads((ROOT/'tests/book_discovery.json').read_text())
 CASES = ('John:1', 'John:1:1', 'John:1:1,3,5', 'John:1:1-3', 'John:1-2',
          'John:1:50-2:3', 'Genesis:49:33-50:3', 'Psalms:150-151',
-         'Judges (Vaticanus):1:1-3', 'Odes:1:1-3', 'Philippians:1:1-3')
+         'Judges (Vaticanus):1:1-3', 'Odes:1:1-3', 'Philippians:1:1-3',
+         'Psalms:9', 'Psalms:22', 'Psalms:113', 'Psalms:114', 'Psalms:115', 'Psalms:146', 'Psalms:147')
+# Kata shows KJV Psalms under Greek/Latin psalm numbers; the KJV applet uses
+# Hebrew numbering. These are the KJV selections each Greek/Latin psalm holds.
+KJV_PSALMS = {('kjv', 'Psalms:9'): '9-10', ('kjv', 'Psalms:22'): '23', ('kjv', 'Psalms:113'): '114-115',
+              ('kjv', 'Psalms:114'): '116:1-9', ('kjv', 'Psalms:115'): '116:10-19',
+              ('kjv', 'Psalms:146'): '147:1-11', ('kjv', 'Psalms:147'): '147:12-20'}
 
 def original_rows(text, name):
     result = {}
@@ -30,11 +36,11 @@ def dumped_rows(text):
         match = re.fullmatch(r'.+ (\d+):(\d+)', line)
         if match:
             key = tuple(map(int, match.groups()))
-        for tool in TOOLS:
-            if key is not None and line.startswith(tool+': '):
-                words = line[len(tool)+2:]
-                if words != '[not present under this verse label]':
-                    result[tool][key] = words
+        own = re.fullmatch(r'(kjv|grb|vul)(?: \((\d+):(\d+)\))?: (.*)', line)
+        if key is not None and own:
+            tool, c, v, words = own.groups()
+            if words != '[not present under this verse label]':
+                result[tool][(int(c), int(v)) if c else key] = words
     return result
 
 with tempfile.TemporaryDirectory(prefix='kata-reference-parity-') as folder:
@@ -47,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix='kata-reference-parity-') as folder:
             if record is None:
                 expected[tool] = {}
                 continue
-            query = (record['name'] if book == 'Philippians' else record['alias'])+':'+suffix
+            query = (record['name'] if book == 'Philippians' else record['alias'])+':'+KJV_PSALMS.get((tool, passage), suffix)
             raw = subprocess.run([tool, '-W', query], capture_output=True, text=True, env=env, timeout=30)
             assert raw.returncode == 0 and not raw.stderr, (tool, passage, raw.stderr)
             expected[tool] = original_rows(raw.stdout, record['name'])
