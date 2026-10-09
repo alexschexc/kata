@@ -14,6 +14,11 @@ pub const start_menu = @import("start_menu.zig");
 pub const search = @import("search.zig");
 pub const ingest = @import("ingest.zig");
 pub const epub = @import("epub.zig");
+pub const xhtml = @import("xhtml.zig");
+pub const document = @import("document.zig");
+pub const convert = @import("convert.zig");
+pub const book_reader = @import("book_reader.zig");
+pub const graphics = @import("graphics.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

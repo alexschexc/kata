@@ -38,7 +38,7 @@ The installed editions list 79 KJV books, 87 Greek books, and 68 Latin books, fo
 
 For a standalone, size-optimized stripped x86-64 Linux executable, build with `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`. This statically links musl and embeds the original text uncompressed. Python scripts under `tests/` are extraction/provenance and verification tools only. `--licenses` displays embedded source credits and licensing notes.
 
-- **Free reading:** choose a book, chapter, and starting verse. Menus accept `j`/`k` or a numbered selection followed by `Enter`. The verse picker uses the actual chapter output: `0` resumes that chapter's saved position (or starts at its beginning if new), while a verse selection anchors the full chapter rather than fetching only one verse. `[` and `]` move to previous/next chapters, including across book boundaries, without wrapping around the title.
+- **Free reading:** choose a book, chapter, and starting verse. Menus accept `j`/`k` or a numbered selection followed by `Enter`. The verse picker uses the actual chapter output: `0` resumes that chapter's saved position (or starts at its beginning if new), while a verse selection anchors the full chapter rather than fetching only one verse. `H`/`L` (or `Shift+←`/`Shift+→`) move to previous/next chapters, including across book boundaries, without wrapping around the title.
 - **Reading plans:** choose a plan and enter the existing daily-session reader. Completion, postponed missed readings, day imports, and independent per-plan progress behave as before.
 
 Press `m` in either reader to return to the library, or `o` to choose a free-reading place. `Esc`/`q` backs out of nested startup menus; at Library it quits without writing progress. Explicit `--passage` and `--plan` launches still open directly in their corresponding reading view.
@@ -89,15 +89,15 @@ Use the same `--state` for a command-line import and subsequent launches when us
 
 | Keys | Action |
 | --- | --- |
-| `j` / `k` | Scroll down/up one rendered line |
+| `j` / `k`, or `↓` / `↑` | Scroll down/up one rendered line |
 | `Ctrl-d` / `Ctrl-u` (also `f` / `b`) | Scroll half a screen |
 | `g` / `G` | Beginning/end of the session |
-| `h` / `l`, or `Tab` | Focus another visible pane |
+| `h` / `l`, `←` / `→`, or `Tab` | Focus another visible pane |
 | `s` | Toggle linked and independent scrolling |
 | `1` / `2` / `3` | Show/hide KJV, Greek, and Latin panes |
 | `m` | Return to Library and choose a title/mode |
 | `o` | Open the free-reading book/chapter/verse picker |
-| `[` / `]` | Previous/next chapter in free-reading mode |
+| `H` / `L`, or `Shift+←` / `Shift+→` | Previous/next chapter in free-reading mode |
 | `p` | Open the in-app plan picker; `j`/`k`, then `Enter` selects |
 | `d` | Open the in-app day picker; browse or type a number, `Enter` previews, `y` confirms |
 | `Esc` / `q` in a picker | Cancel and return to the reader |
@@ -107,6 +107,16 @@ Use the same `--state` for a command-line import and subsequent launches when us
 | `r` | Focus the search results panel |
 | `n` / `N` | Open the next/previous search result |
 | `x` | Close search and clear highlighting |
+
+## EPUB books (ingest)
+
+First launch asks for two absolute folders: an ingest folder (default suggestion `~/kataIngest`) that Kata only reads EPUBs from, and a library folder (`~/kataLibrary`) where each EPUB is converted to a Kata document with the same name minus `.epub`. The choice is saved in `<config>/kata/folders.json` and can be changed from the last Library entry. `Esc` skips the prompt; Bible reading works without folders.
+
+At startup Kata converts only new or changed EPUBs and then lists every indexed document in the Library. `<library>/.kata-manifest.json` records each source's size, modification time, SHA-256, and converter version; `<library>/.kata-index.json` lists readable documents. Unchanged books are neither reconverted nor reparsed. Documents whose EPUB was removed are kept and reported as orphaned; Kata never deletes them. `kata ingest` prints a per-book report; `--force` reconverts everything.
+
+Conversion keeps chapters (spine order, titled by their first heading), headings, paragraphs, verse numbers (explicit or counted within each heading, cross-checked against printed numbers), superscriptions and rubrics, print page labels, code blocks with exact spacing, lists, glossary terms, simple tables, figure captions, sidebars and footnotes. It drops navigation, index pages, ornaments, scripts/styles, SVG, and index-term anchors. Images are copied to `<library>/<book>.assets/` and shown as `▣ image` lines; `i` opens the nearest one in the desktop image viewer. `kata --detect-graphics` reports whether the terminal supports inline Sixel/Kitty images (inline display is not built yet). EPUBs with encrypted content (DRM) are refused; font obfuscation is allowed.
+
+Book reader keys: `j`/`k`, `Ctrl-d`/`Ctrl-u` (or `f`/`b`, Space), `g`/`G`; `H`/`L` (or `Shift+←`/`Shift+→`) previous/next chapter; `↑`/`↓` scroll; `t` chapter list; `/` search the whole book (results panel, `n`/`N`, `r`, `x` as in the Bible reader); `m` Library; `q` quit. Verse numbers appear in the left gutter and page changes as `── page N ──` rules. Position is saved per book under `<state-path>.books/`.
 
 ## Word search
 
@@ -118,7 +128,7 @@ Matching is case- and accent-insensitive and matches word starts: `love` finds *
 
 Corresponding verse labels share a row height, with padding under shorter translations. Linked scrolling operates over this common layout; independent scrolling moves only the focused pane. Resizing rewraps text while preserving verse-row anchors. The terminal's original input mode and screen are restored on exit and handled termination signals.
 
-Unknown keys and invalid numeric selections do nothing silently. Terminal escape sequences (including arrow/function-key and modified-key events), control strings, malformed Unicode, and bracketed-paste payloads are consumed without dispatching their bytes as commands. Arrow keys are currently ignored; use `j`/`k`. A lone `Esc` still cancels after a short interbyte timeout. Incomplete bracketed paste remains quarantined until its closing marker, or until the process is stopped with a signal. Paste framing is enabled on entry and disabled on exit.
+Unknown keys and invalid numeric selections do nothing silently. Terminal escape sequences (including arrow/function-key and modified-key events), control strings, malformed Unicode, and bracketed-paste payloads are consumed without dispatching their bytes as commands. Arrow keys act as `h`/`j`/`k`/`l`, and `Shift+←`/`Shift+→` as `H`/`L`; other modified or function keys are ignored. Arrows are inert while typing in a prompt. A lone `Esc` still cancels after a short interbyte timeout. Incomplete bracketed paste remains quarantined until its closing marker, or until the process is stopped with a signal. Paste framing is enabled on entry and disabled on exit.
 
 ## Reading plans and state
 

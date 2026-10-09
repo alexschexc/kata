@@ -57,7 +57,7 @@ class UI:
                 self.p.kill(); self.p.wait()
             os.close(self.master); os.close(self.slave)
 
-NOISE = (b'\x1b[A\x1b[B\x1b[C\x1b[D\x1bOq\x1bOP\x1b[1;5q\x1b[27;5;121~'
+NOISE = (b'\x1b[1;5A\x1b[5~\x1b[1;3C\x1bOq\x1bOP\x1b[1;5q\x1b[27;5;121~'
          b'\x1b[200~qmyc123\r\njj[]\x1bOq\x1b[201~'
          b'\x1b]0;qmy\x07\x1bPqmy\x1b\\'
          b'\x00\x01\x02\x05\x06\x7f' # Backspace is tested separately in menus.
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='kata-input-') as folder:
     try:
         ui.expect('Genesis:2 · free reading')
         assert b'\x1b[?2004h' in ui.data, 'terminal must request bracketed paste framing'
-        ui.inert(b'\x1b[A')  # RED on old reader: '[' opens the previous chapter.
+        ui.inert(b'[]')  # Old chapter keys are inert now; H/L replace them.
         ui.inert(b'\x1bOq')  # Old SS3 keypad payload quits.
         ui.inert(READER_NOISE * 100)
         ui.inert(b'\x1b[' + b'1;' * 10000 + b'q')
@@ -87,8 +87,8 @@ with tempfile.TemporaryDirectory(prefix='kata-input-') as folder:
         ui.expect('enlarge the terminal')
         ui.inert(READER_NOISE)
         ui.resize(30, 150); ui.expect('Genesis:2 · free reading', len(ui.data))
-        ui.send(b']', 'Genesis:3 · free reading')
-        ui.send(b'[', 'Genesis:2 · free reading')
+        ui.send(b'\x1b[1;2C', 'Genesis:3 · free reading')
+        ui.send(b'H', 'Genesis:2 · free reading')
         ui.send(b'm', 'Library')
         ui.resize(2, 2); ui.expect('Enlarge terminal')
         ui.inert(READER_NOISE)

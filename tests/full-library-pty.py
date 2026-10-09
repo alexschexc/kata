@@ -36,9 +36,15 @@ class UI:
         os.close(self.master)
         os.close(self.slave)
 
+def choose_folders(config, root):
+    """Pre-answer Kata's first-run ingest folder prompt for this test."""
+    (config/'kata').mkdir(parents=True, exist_ok=True)
+    (config/'kata'/'folders.json').write_text(json.dumps({'version': 1, 'ingest': str(root/'kataIngest'), 'library': str(root/'kataLibrary')}))
+
 with tempfile.TemporaryDirectory(prefix='kata-full-library-') as folder:
     tmp = Path(folder)
     env = dict(os.environ, XDG_CONFIG_HOME=str(tmp/'config'), XDG_STATE_HOME=str(tmp/'state'))
+    choose_folders(tmp/'config', tmp)
     state = tmp/'progress.json'
     subprocess.run([str(BIN), '--state', str(state), '--start-day', '88', '--confirm'], env=env,
                    check=True, capture_output=True, cwd='/tmp')
@@ -62,8 +68,8 @@ with tempfile.TemporaryDirectory(prefix='kata-full-library-') as folder:
         ui.send(b'1\r', 'Choose starting verse')
         ui.send(b'1\r', 'Genesis:1 · free reading')
         ui.expect('In the beginning')
-        ui.send(b']', 'Genesis:2 · free reading')
-        ui.send(b'[', 'Genesis:1 · free reading')
+        ui.send(b'L', 'Genesis:2 · free reading')
+        ui.send(b'\x1b[1;2D', 'Genesis:1 · free reading')
         ui.send(b'm', 'Library')
         assert state.read_bytes() == original
         ui.send(b'\r', 'Reading mode')

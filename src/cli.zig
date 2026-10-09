@@ -30,6 +30,42 @@ fn parsePlanDay(raw: []const u8) !usize {
     return day;
 }
 
+fn ingestCommand(init: std.process.Init, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const ingest = @import("ingest.zig");
+    var force = false;
+    var ingest_dir: ?[]const u8 = null;
+    var library_dir: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--force")) {
+            force = true;
+        } else if (std.mem.eql(u8, arg, "--ingest-dir") or std.mem.eql(u8, arg, "--library-dir")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            if (std.mem.eql(u8, arg, "--ingest-dir")) ingest_dir = args[i] else library_dir = args[i];
+        } else return error.UnknownArgument;
+    }
+    const config_home = try paths.root(allocator, init.environ_map, @import("builtin").os.tag == .windows, .config);
+    const saved = try ingest.loadFolders(allocator, init.io, config_home);
+    if ((ingest_dir == null) != (library_dir == null) and saved == null) return error.BothFoldersRequired;
+    const folders: ingest.Folders = .{
+        .ingest = ingest_dir orelse if (saved) |f| f.ingest else {
+            try tui.writeAll("kata: no ingest folders chosen yet. Launch kata to choose them, or pass\n  kata ingest --ingest-dir PATH --library-dir PATH\n");
+            return error.FoldersNotChosen;
+        },
+        .library = library_dir orelse saved.?.library,
+    };
+    if (ingest_dir != null or library_dir != null) try ingest.saveFolders(allocator, init.io, config_home, folders);
+    try output(allocator, "Ingest: {s}\nLibrary: {s}\n", .{ folders.ingest, folders.library });
+    const summary = try ingest.run(allocator, init.io, folders, force);
+    for (summary.reports) |report| {
+        try output(allocator, "  {s: <9} {s}{s}{s}\n", .{ @tagName(report.outcome), report.name, if (report.detail.len > 0) " · " else "", report.detail });
+    }
+    try output(allocator, "{d} converted, {d} unchanged, {d} failed, {d} orphaned; {d} documents indexed{s}.\n", .{ summary.converted, summary.unchanged, summary.failed, summary.orphaned, summary.indexed, if (summary.index_rebuilt) " (index rebuilt)" else " (index current)" });
+    if (summary.failed > 0) return error.IngestFailures;
+}
+
 pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
@@ -41,6 +77,7 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
     var complete = false;
     var start_day: ?usize = null;
     var confirm = false;
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "ingest")) return ingestCommand(init, allocator, args[2..]);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -49,20 +86,29 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
                 "Kata · parallel terminal reader (Zig prototype)\n" ++
                     "  kata                         library → title → free reading or plans\n" ++
                     "  kata --passage 'Genesis:1'   ad-hoc passage from any available book\n" ++
+                    "  kata ingest [--force]        convert new/changed EPUBs and index the library\n" ++
+                    "    --ingest-dir P --library-dir P   use (and save) these folders\n" ++
                     "  --plan PATH                  custom JSON reading plan\n" ++
                     "  --state PATH                 isolated persistent state\n" ++
                     "  --dump                       plain-text output, no state writes\n" ++
                     "  --licenses                   bundled text credits and license notices\n" ++
+                    "  --detect-graphics            report the terminal's inline image support\n" ++
                     "  --check-plan                 print complete cycle, no state writes\n" ++
                     "  --complete                   explicitly mark today complete and exit\n" ++
                     "  --start-day N                preview starting at plan day N (1-based)\n" ++
                     "  --start-day N --confirm      save preceding days as complete; N pending\n" ++
-                    "Keys: j/k, Ctrl-d/u, g/G; h/l or Tab focus; s linked scroll;\n" ++
-                    "      m library; o choose free-reading place; [/] previous/next chapter;\n" ++
+                    "Keys: j/k or ↑/↓, Ctrl-d/u, g/G; h/l, ←/→ or Tab focus; s linked scroll;\n" ++
+                    "      m library; o choose free-reading place; H/L or Shift+←/→ previous/next chapter;\n" ++
                     "      p choose plan; d choose day; 1/2/3 sources; c then y complete; q quit.\n" ++
                     "      / search focused translation; r results; n/N next/previous; x close search.\n" ++
                     "Verse-label alignment only: numbering variants need explicit mapping.\n",
             );
+            return;
+        } else if (std.mem.eql(u8, arg, "--detect-graphics")) {
+            var terminal = try tui.Terminal.init();
+            const caps = tui.detectGraphics(400);
+            terminal.deinit();
+            try output(allocator, "Inline images: {s}; cell {d}x{d} px\n", .{ caps.describe(), caps.cell_width, caps.cell_height });
             return;
         } else if (std.mem.eql(u8, arg, "--licenses")) {
             try tui.writeAll(@embedFile("third_party_notices.txt"));

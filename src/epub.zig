@@ -131,9 +131,31 @@ fn join(allocator: std.mem.Allocator, base_dir: []const u8, href: []const u8) ![
 
 /// Refuses DRM: encryption.xml listing anything other than font obfuscation.
 pub fn checkDrm(archive: Archive) !void {
-    const entry = archive.find("META-INF/encryption.xml") orelse return;
-    _ = entry;
-    return error.EncryptedEpub; // TODO: allow IDPF/Adobe font obfuscation only
+    if (archive.find("META-INF/rights.xml") != null) return error.EncryptedEpub;
+    if (archive.find("META-INF/encryption.xml") == null) return;
+    var scratch: [64 << 10]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const xml = archive.read(fixed.allocator(), "META-INF/encryption.xml") catch return error.EncryptedEpub;
+    return checkEncryption(xml);
+}
+
+/// Font obfuscation (IDPF, Adobe) only scrambles embedded fonts; anything else
+/// listed in encryption.xml means content is encrypted (DRM): refuse it.
+fn checkEncryption(xml: []const u8) !void {
+    const allowed = [_][]const u8{ "http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC" };
+    var methods: Tags = .{ .text = xml, .local = "EncryptionMethod" };
+    while (methods.next()) |tag| {
+        const algorithm = attribute(tag, "Algorithm") orelse return error.EncryptedEpub;
+        for (allowed) |ok| {
+            if (std.mem.eql(u8, algorithm, ok)) break;
+        } else return error.EncryptedEpub;
+    }
+}
+
+test "font obfuscation is allowed but encrypted content is refused" {
+    try checkEncryption("<encryption><EncryptedData><enc:EncryptionMethod Algorithm=\"http://www.idpf.org/2008/embedding\"/></EncryptedData></encryption>");
+    try std.testing.expectError(error.EncryptedEpub, checkEncryption("<EncryptionMethod Algorithm=\"http://www.w3.org/2001/04/xmlenc#aes128-cbc\"/>"));
+    try std.testing.expectError(error.EncryptedEpub, checkEncryption("<EncryptionMethod/>"));
 }
 
 /// container.xml → OPF → metadata, manifest, spine, TOC. Strings borrow

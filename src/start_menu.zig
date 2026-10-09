@@ -4,7 +4,10 @@ const source = @import("source.zig");
 const catalog = @import("catalog.zig");
 const tui = @import("tui.zig");
 
-pub const Choice = union(enum) { plan: usize, free: library.Location };
+pub const Choice = union(enum) { plan: usize, free: library.Location, book: usize, folders };
+
+/// Ingested documents offered in the Library after the built-in titles.
+pub const Book = struct { title: []const u8, author: []const u8 = "", chapters: u32 = 0 };
 
 test "visible library excludes the duplicated legacy New Testament" {
     try std.testing.expectEqual(@as(usize, 1), visible_titles.len);
@@ -121,7 +124,7 @@ pub fn choosePlace(io: std.Io, initial: library.Location) !?library.Location {
     return null;
 }
 
-pub fn run(plans: []const catalog.Entry, selected_plan: usize, io: std.Io, last_free: library.Location, notice: []const u8) !?Choice {
+pub fn run(plans: []const catalog.Entry, selected_plan: usize, io: std.Io, last_free: library.Location, notice: []const u8, books: []const Book) !?Choice {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -132,8 +135,14 @@ pub fn run(plans: []const catalog.Entry, selected_plan: usize, io: std.Io, last_
         if (index == last_free.title) selected_title = row;
         try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s} · {s}", .{ title.name, title.description }));
     }
+    for (books) |book| {
+        try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}{s} · {d} chapters", .{ book.title, if (book.author.len > 0) " · " else "", book.author, book.chapters }));
+    }
+    try labels.append(allocator, "Ingest folders · choose where EPUBs are read from and converted books are kept");
     while (!tui.isInterrupted()) {
         const title_row = try tui.choose(allocator, "Library", notice, labels.items, selected_title, 1) orelse return null;
+        if (title_row >= visible_titles.len + books.len) return .folders;
+        if (title_row >= visible_titles.len) return .{ .book = title_row - visible_titles.len };
         const title_index = visible_titles[title_row];
         const title = library.titles[title_index];
         while (!tui.isInterrupted()) {

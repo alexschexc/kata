@@ -48,6 +48,11 @@ class UI:
         offset = len(self.data)
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         self.expect('enlarge the terminal', offset)
+def choose_folders(config, root):
+    """Pre-answer Kata's first-run ingest folder prompt for this test."""
+    (config/'kata').mkdir(parents=True, exist_ok=True)
+    (config/'kata'/'folders.json').write_text(json.dumps({'version': 1, 'ingest': str(root/'kataIngest'), 'library': str(root/'kataLibrary')}))
+
 with tempfile.TemporaryDirectory(prefix='.prototype-inapp-test-', dir=ROOT) as folder:
     tmp = Path(folder); state = tmp/'state.json'
     plans = tmp/'config/kata/plans'; plans.mkdir(parents=True)
@@ -55,6 +60,7 @@ with tempfile.TemporaryDirectory(prefix='.prototype-inapp-test-', dir=ROOT) as f
     (plans/'short.json').write_text(json.dumps(short))
     (plans/'invalid.json').write_text('not JSON')
     env = os.environ | {'XDG_CONFIG_HOME':str(tmp/'config')}
+    choose_folders(tmp/'config', tmp)
     ui = UI(state, env)
     try:
         ui.send(b'p', 'Choose plan')

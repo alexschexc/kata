@@ -10,7 +10,7 @@ var decoder: input.Decoder = .{};
 const backend = if (@import("builtin").os.tag == .windows) @import("terminal_windows.zig") else @import("terminal_posix.zig");
 pub const writeAll = backend.writeAll;
 
-fn clipped(text: []const u8, width: usize) []const u8 {
+pub fn clipped(text: []const u8, width: usize) []const u8 {
     var end: usize = 0;
     while (end < text.len) {
         const length = std.unicode.utf8ByteSequenceLength(text[end]) catch break;
@@ -20,7 +20,7 @@ fn clipped(text: []const u8, width: usize) []const u8 {
     return text[0..end];
 }
 
-fn cell(writer: *std.Io.Writer, text: []const u8, width: usize) !void {
+pub fn cell(writer: *std.Io.Writer, text: []const u8, width: usize) !void {
     const visible = clipped(text, width);
     try writer.writeAll(visible);
     for (layout.displayWidth(visible)..width) |_| try writer.writeByte(' ');
@@ -173,8 +173,130 @@ pub fn run(allocator: std.mem.Allocator, rows: []const layout.Row, state: *stora
 }
 
 pub const isInterrupted = backend.isInterrupted;
+pub const Size = @import("terminal_types.zig").Size;
 
-fn readKey() !?u8 {
+/// Queries the terminal's image support. Call after Terminal.init (raw mode),
+/// before any key reading. Bounded by `timeout_ms`; never blocks longer.
+pub fn detectGraphics(timeout_ms: u32) @import("graphics.zig").Capabilities {
+    const graphics = @import("graphics.zig");
+    writeAll(graphics.query) catch return .{};
+    var reply: [512]u8 = undefined;
+    var len: usize = 0;
+    var waited: u32 = 0;
+    while (waited < timeout_ms and len < reply.len) {
+        const value = backend.readByte() catch return .{};
+        switch (value) {
+            .byte => |byte| {
+                reply[len] = byte;
+                len += 1;
+                if (byte == 'c') if (graphics.parse(reply[0..len])) |caps| return caps;
+            },
+            .timeout => waited += 80,
+            .ignored => {},
+        }
+    }
+    return .{};
+}
+
+pub fn screenSize() !Size {
+    return backend.size();
+}
+
+/// Text entry: printable and UTF-8 bytes (including pasted text) reach the caller.
+pub fn setTextInput(on: bool) void {
+    decoder.text = on;
+}
+
+/// One-line status screen shown while slow work (EPUB conversion) runs.
+pub fn status(text: []const u8) !void {
+    const size = backend.size() catch Size{ .columns = 80, .rows = 24 };
+    var buffer: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buffer);
+    w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ") catch {};
+    w.writeAll(clipped(text, size.columns -| 14)) catch {};
+    try writeAll(w.buffered());
+}
+
+/// Single-line text prompt inside the application terminal. Returns the
+/// entered text (owned by `allocator`), or null when cancelled with Esc.
+pub fn prompt(allocator: std.mem.Allocator, title: []const u8, description: []const u8, initial: []const u8) !?[]const u8 {
+    var buffer: [1024]u8 = undefined;
+    var len: usize = @min(initial.len, buffer.len);
+    @memcpy(buffer[0..len], initial[0..len]);
+    decoder.text = true;
+    defer decoder.text = false;
+    var redraw = true;
+    var old: Size = .{ .columns = 0, .rows = 0 };
+    var invalid = false;
+    while (!isInterrupted()) {
+        const size = try backend.size();
+        if (size.columns != old.columns or size.rows != old.rows) redraw = true;
+        if (redraw) {
+            var frame = std.Io.Writer.Allocating.init(allocator);
+            defer frame.deinit();
+            const w = &frame.writer;
+            try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ");
+            try w.writeAll(clipped(title, size.columns -| 14));
+            if (size.columns < 24 or size.rows < 10) {
+                try w.writeAll("\r\nEnlarge terminal. Esc cancels.");
+            } else {
+                var wrapping = std.heap.ArenaAllocator.init(allocator);
+                defer wrapping.deinit();
+                const lines = layout.wrap(wrapping.allocator(), description, size.columns -| 2) catch &[_][]const u8{description};
+                for (lines[0..@min(lines.len, size.rows -| 7)], 0..) |line, i| {
+                    try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{i + 3});
+                    try w.writeAll(clipped(line, size.columns));
+                }
+                const text = buffer[0..len];
+                const shown = if (layout.displayWidth(text) + 4 > size.columns) blk: {
+                    // Show the end of a long entry.
+                    var start: usize = 0;
+                    while (start < text.len and layout.displayWidth(text[start..]) + 4 > size.columns) start += 1;
+                    while (start < text.len and (text[start] & 0xC0) == 0x80) start += 1;
+                    break :blk text[start..];
+                } else text;
+                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m> \x1b[38;2;224;215;191m", .{@min(lines.len, size.rows -| 7) + 4});
+                try w.writeAll(shown);
+                try w.writeAll("█");
+                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{size.rows - 1});
+                try w.writeAll(clipped("Type or paste · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels", size.columns));
+                if (invalid) {
+                    try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{size.rows});
+                    try w.writeAll(clipped("Enter some text first (it must be valid UTF-8).", size.columns));
+                }
+            }
+            try writeAll(frame.written());
+            old = size;
+            redraw = false;
+        }
+        const key = try readKey() orelse continue;
+        redraw = true;
+        invalid = false;
+        switch (key) {
+            27 => return null,
+            10, 13 => {
+                const text = std.mem.trim(u8, buffer[0..len], " ");
+                if (text.len == 0 or !std.unicode.utf8ValidateSlice(text)) {
+                    invalid = true;
+                    continue;
+                }
+                return try allocator.dupe(u8, text);
+            },
+            127, 8 => {
+                if (len > 0) len -= 1;
+                while (len > 0 and (buffer[len] & 0xC0) == 0x80) len -= 1;
+            },
+            21 => len = 0,
+            else => if (key >= 0x20 and key != 0x7f and len < buffer.len) {
+                buffer[len] = key;
+                len += 1;
+            },
+        }
+    }
+    return null;
+}
+
+pub fn readKey() !?u8 {
     if (isInterrupted()) return null;
     const value = try backend.readByte();
     const key = switch (value) {
@@ -250,6 +372,11 @@ const mark_off = "\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m";
 
 /// Writes full[from..to], highlighting query matches found from `search_from`.
 fn writeMarked(w: *std.Io.Writer, full: []const u8, from: usize, to: usize, query: *const search.Query, search_from: usize) !void {
+    return writeMarkedStyled(w, full, from, to, query, search_from, mark_off);
+}
+
+/// As `writeMarked`, restoring `restore` (colour escape) after each match.
+pub fn writeMarkedStyled(w: *std.Io.Writer, full: []const u8, from: usize, to: usize, query: *const search.Query, search_from: usize, after_match: []const u8) !void {
     var at = from;
     var cursor = search_from;
     while (search.next(full, query, cursor)) |range| {
@@ -261,7 +388,7 @@ fn writeMarked(w: *std.Io.Writer, full: []const u8, from: usize, to: usize, quer
         try w.writeAll(full[at..first]);
         try w.writeAll(mark_on);
         try w.writeAll(full[first..last]);
-        try w.writeAll(mark_off);
+        try w.writeAll(after_match);
         at = last;
     }
     try w.writeAll(full[at..to]);
@@ -464,7 +591,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 else if (panel_open)
                     "j/k scroll · h/l focus · / search · r results · n/N next/previous match · x close search"
                 else
-                    "j/k scroll · Ctrl-d/u page · h/l focus · s sync · 1/2/3 panes · g/G ends · / search";
+                    "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search";
                 try w.writeAll(clipped(help, columns));
                 try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
                 if (prompting) {
@@ -473,7 +600,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                     defer allocator.free(line);
                     try w.writeAll("\x1b[38;2;224;215;191m");
                     try w.writeAll(clipped(line, columns));
-                } else try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · [/] previous/next chapter · p plans · q quit", columns));
+                } else try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · H/L (Shift+←/→) previous/next chapter · p plans · q quit", columns));
             }
             try writeAll(frame.written());
             redraw = false;
@@ -584,13 +711,13 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
         }
         switch (key) {
             'q', 3 => break,
-            'm', 'o', '[', ']' => {
-                if ((key == '[' or key == ']') and options.plan_mode) continue;
+            'm', 'o', 'H', 'L' => {
+                if ((key == 'H' or key == 'L') and options.plan_mode) continue;
                 remember(lines, tops, state);
                 return switch (key) {
                     'm' => .home,
                     'o' => .open_place,
-                    '[' => .previous_chapter,
+                    'H' => .previous_chapter,
                     else => .next_chapter,
                 };
             },

@@ -13,6 +13,9 @@ pub const Decoder = struct {
     /// Text entry (search prompt): printable ASCII and UTF-8 bytes are
     /// delivered too. Escape/control-string/paste framing is unchanged.
     text: bool = false,
+    /// CSI parameter bytes, for recognizing arrow-key sequences.
+    params: [8]u8 = undefined,
+    params_len: u8 = 0,
 
     pub fn feed(self: *Decoder, byte: u8) ?u8 {
         if (byte == 27 and (self.mode == .csi or self.mode == .ss3 or self.mode == .intermediate)) {
@@ -50,8 +53,14 @@ pub const Decoder = struct {
                     }
                 },
             },
-            .intermediate, .ss3 => {
+            .intermediate => {
                 if (byte >= 0x40 and byte <= 0x7e) self.mode = .plain;
+            },
+            .ss3 => {
+                if (byte >= 0x40 and byte <= 0x7e) {
+                    self.mode = .plain;
+                    return self.arrow(byte, false);
+                }
             },
             .csi => {
                 // Only an exact CSI 200~ starts paste. Saturating count bounds
@@ -60,7 +69,17 @@ pub const Decoder = struct {
                 if (byte >= 0x40 and byte <= 0x7e) {
                     self.mode = if (byte == '~' and self.paste_start and self.csi_length == marker.len) .paste else .plain;
                     self.paste_match = 0;
+                    if (self.mode == .plain) {
+                        const p = self.params[0..self.params_len];
+                        // Plain arrows (CSI A, CSI 1A) and Shift+arrows (CSI 1;2A).
+                        if (self.csi_length == p.len and (p.len == 0 or std.mem.eql(u8, p, "1"))) return self.arrow(byte, false);
+                        if (self.csi_length == p.len and std.mem.eql(u8, p, "1;2")) return self.arrow(byte, true);
+                    }
                 } else {
+                    if (self.params_len < self.params.len) {
+                        self.params[self.params_len] = byte;
+                        self.params_len += 1;
+                    }
                     if (self.csi_length >= marker.len or byte != marker[@min(self.csi_length, marker.len - 1)]) self.paste_start = false;
                     self.csi_length +|= 1;
                 }
@@ -86,7 +105,12 @@ pub const Decoder = struct {
                         self.mode = .plain;
                         self.paste_match = 0;
                     }
-                } else self.paste_match = if (byte == 27) 1 else 0;
+                } else {
+                    self.paste_match = if (byte == 27) 1 else 0;
+                    // Text entry accepts pasted characters; newlines and
+                    // controls stay inert so a paste never submits.
+                    if (self.text and self.paste_match == 0 and byte >= 0x20 and byte != 0x7f) return byte;
+                }
             },
         }
         return null;
@@ -95,21 +119,36 @@ pub const Decoder = struct {
     fn beginCsi(self: *Decoder) void {
         self.mode = .csi;
         self.csi_length = 0;
+        self.params_len = 0;
         self.paste_start = true;
+    }
+
+    /// Arrow keys map to their Vim keys (h/j/k/l); Shift+Left/Right map to
+    /// H/L (previous/next chapter). Inert during text entry.
+    fn arrow(self: *Decoder, final: u8, shift: bool) ?u8 {
+        if (self.text) return null;
+        return switch (final) {
+            'A' => if (shift) null else 'k',
+            'B' => if (shift) null else 'j',
+            'C' => if (shift) 'L' else 'l',
+            'D' => if (shift) 'H' else 'h',
+            else => null,
+        };
     }
 
     /// Called only after an idle interbyte deadline. Lone ESC cancels;
     /// incomplete sequences are discarded, never emitted as an ESC event.
     pub fn timeout(self: *Decoder) ?u8 {
         const lone_escape = self.mode == .escape;
-        if (self.mode != .paste) self.* = .{};
+        // Reset framing only; text entry is a caller mode, not decoder state.
+        if (self.mode != .paste) self.* = .{ .text = self.text };
         return if (lone_escape) 27 else null;
     }
 };
 
 pub fn recognized(byte: u8) bool {
     return switch (byte) {
-        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', '[', ']', 'f', 'b', 'g', 'G', 's', 'p', 'd', '/', 'N', 'r', 'x' => true,
+        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', 'H', 'L', 'f', 'b', 'g', 'G', 's', 'p', 'd', '/', 'N', 'r', 'x', 't', 'i' => true,
         else => false,
     };
 }
@@ -127,6 +166,39 @@ test "text mode delivers printable and UTF-8 bytes but keeps sequences inert" {
     try std.testing.expect(decoder.feed('a') == null);
     try std.testing.expect(decoder.feed(0xce) == null);
     try std.testing.expect(decoder.feed(0xbb) == null);
+}
+
+test "text mode accepts pasted characters but never pasted controls" {
+    var decoder: Decoder = .{ .text = true };
+    var got: [32]u8 = undefined;
+    var n: usize = 0;
+    for ("\x1b[200~/home/a b\r\n\x1b[201~q") |byte| if (decoder.feed(byte)) |key| {
+        got[n] = key;
+        n += 1;
+    };
+    try std.testing.expectEqualStrings("/home/a bq", got[0..n]);
+}
+
+test "idle timeouts keep text entry mode" {
+    var decoder: Decoder = .{ .text = true };
+    _ = decoder.timeout();
+    try std.testing.expectEqual(@as(?u8, 'e'), decoder.feed('e'));
+    _ = decoder.feed(27);
+    try std.testing.expectEqual(@as(?u8, 27), decoder.timeout());
+    try std.testing.expect(decoder.text);
+}
+
+test "arrow keys map to vim keys and shift arrows to chapter keys" {
+    var decoder: Decoder = .{};
+    var got: [16]u8 = undefined;
+    var n: usize = 0;
+    for ("\x1b[A\x1b[B\x1b[C\x1b[D\x1bOA\x1b[1B\x1b[1;2D\x1b[1;2C\x1b[1;2A\x1b[1;5C\x1b[5~\x9b\x41") |byte| if (decoder.feed(byte)) |key| {
+        got[n] = key;
+        n += 1;
+    };
+    try std.testing.expectEqualStrings("kjlhkjHLk", got[0..n]);
+    decoder.text = true;
+    for ("\x1b[A\x1b[1;2D") |byte| try std.testing.expect(decoder.feed(byte) == null);
 }
 
 test "timeouts distinguish lone Escape from malformed sequences and preserve paste quarantine" {
@@ -167,7 +239,7 @@ test "nested escapes resynchronize without leaking a command final" {
 
 test "terminal sequences never dispatch their reserved payload bytes" {
     var decoder: Decoder = .{};
-    for ("\x1b[A\x1bOq\x1b[1;5q\x1b[27;5;121~\x1b[200~qcy123\r\n[]\x1b[201~\x1b]0;q\x07\x1bPq\x1b\\") |byte| {
+    for ("\x1b[1;5A\x1bOq\x1b[1;5q\x1b[27;5;121~\x1b[200~qcy123\r\n[]\x1b[201~\x1b]0;q\x07\x1bPq\x1b\\") |byte| {
         try std.testing.expect(decoder.feed(byte) == null);
     }
     try std.testing.expectEqual(@as(?u8, 'j'), decoder.feed('j'));

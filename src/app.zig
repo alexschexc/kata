@@ -10,6 +10,76 @@ const reading = @import("reading.zig");
 const start = @import("start_menu.zig");
 const paths = @import("platform_paths.zig");
 const search = @import("search.zig");
+const ingest = @import("ingest.zig");
+const document = @import("document.zig");
+const book_reader = @import("book_reader.zig");
+
+/// Ingested library state for this run.
+const Shelf = struct {
+    folders: ingest.Folders = .{},
+    entries: []const ingest.IndexEntry = &.{},
+    books: []const start.Book = &.{},
+    notice: ?[]const u8 = null,
+};
+
+fn shelve(allocator: std.mem.Allocator, shelf: *Shelf, entries: []const ingest.IndexEntry) !void {
+    var books = try allocator.alloc(start.Book, entries.len);
+    for (entries, 0..) |entry, i| books[i] = .{ .title = entry.title, .author = entry.author, .chapters = entry.chapters };
+    shelf.entries = entries;
+    shelf.books = books;
+}
+
+/// Quick startup check: convert only new/changed EPUBs, then load the index.
+fn refreshShelf(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf) !void {
+    if (!shelf.folders.configured()) return;
+    tui.status("Checking ingest folder for new or changed EPUBs…") catch {};
+    const summary = ingest.run(allocator, io, shelf.folders, false) catch |err| {
+        shelf.notice = try std.fmt.allocPrint(allocator, "Ingest check failed: {s}. Existing library kept.", .{@errorName(err)});
+        try shelve(allocator, shelf, ingest.loadIndex(allocator, io, shelf.folders.library) catch &.{});
+        return;
+    };
+    try shelve(allocator, shelf, ingest.loadIndex(allocator, io, shelf.folders.library) catch &.{});
+    if (summary.converted > 0 or summary.failed > 0) {
+        shelf.notice = try std.fmt.allocPrint(allocator, "Ingest: {d} converted, {d} failed, {d} unchanged. Run `kata ingest` in a shell for details.", .{ summary.converted, summary.failed, summary.unchanged });
+    }
+}
+
+/// First-run (or on request) folder choice. Never guesses: the user confirms
+/// or edits each absolute path. Returns false when cancelled.
+fn chooseFolders(allocator: std.mem.Allocator, io: std.Io, config_home: []const u8, home: ?[]const u8, shelf: *Shelf) !bool {
+    const suggestion = if (shelf.folders.configured()) shelf.folders else if (home) |h| try ingest.defaultFolders(allocator, h) else ingest.Folders{};
+    var folders: ingest.Folders = .{};
+    var error_note: []const u8 = "";
+    inline for (.{ "ingest", "library" }) |field| {
+        while (true) {
+            const description = if (comptime std.mem.eql(u8, field, "ingest"))
+                "Where should Kata look for EPUB files to convert? Use an absolute path (~/ is expanded). The folder is created if missing; Kata only reads from it."
+            else
+                "Where should Kata keep converted books? Each EPUB becomes a readable document with the same name here, plus a small index. Use an absolute path.";
+            const full = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ description, if (error_note.len > 0) "  ⚠ " else "", error_note });
+            const raw = try tui.prompt(allocator, if (comptime std.mem.eql(u8, field, "ingest")) "Ingest folder (kataIngest)" else "Library folder (kataLibrary)", full, @field(suggestion, field)) orelse return false;
+            @field(folders, field) = ingest.normalizeFolder(allocator, raw, home) catch |err| {
+                error_note = switch (err) {
+                    error.FolderMustBeAbsolute => "That path is relative; enter an absolute path.",
+                    else => @errorName(err),
+                };
+                continue;
+            };
+            error_note = "";
+            break;
+        }
+    }
+    if (std.mem.eql(u8, folders.ingest, folders.library)) {
+        shelf.notice = "Ingest and library folders must differ. Folders unchanged.";
+        return false;
+    }
+    ingest.saveFolders(allocator, io, config_home, folders) catch |err| {
+        shelf.notice = try std.fmt.allocPrint(allocator, "Cannot create folders: {s}. Folders unchanged.", .{@errorName(err)});
+        return false;
+    };
+    shelf.folders = folders;
+    return true;
+}
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -94,11 +164,27 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     var override = initial_passage;
     var finder: search.State = .{};
     defer finder.deinit();
+    var shelf: Shelf = .{};
+    const home = init.environ_map.get("HOME") orelse init.environ_map.get("USERPROFILE");
+    const folders_saved = ingest.loadFolders(allocator, init.io, config_home) catch |err| blk: {
+        notice = try std.fmt.allocPrint(allocator, "Ingest folder settings unreadable ({s}); choose them again from the Library.", .{@errorName(err)});
+        break :blk null;
+    };
+    if (folders_saved) |f| shelf.folders = f;
     var terminal = try tui.Terminal.init();
     defer terminal.deinit();
+    if (active == null) {
+        if (folders_saved == null and shelf.notice == null) {
+            if (!try chooseFolders(allocator, init.io, config_home, home, &shelf) and shelf.notice == null) {
+                shelf.notice = "Ingest folders not chosen. Choose them any time from the last Library entry.";
+            }
+        }
+        try refreshShelf(allocator, init.io, &shelf);
+        if (shelf.notice) |message| notice = message;
+    }
     while (!tui.isInterrupted()) {
         if (active == null) {
-            active = start.run(plans.entries.items, selected, init.io, last_free, notice) catch |err| {
+            active = start.run(plans.entries.items, selected, init.io, last_free, notice, shelf.books) catch |err| {
                 notice = try std.fmt.allocPrint(allocator, "Cannot open requested reading: {s}. Choose another place or mode.", .{@errorName(err)});
                 continue;
             };
@@ -109,6 +195,35 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         switch (active.?) {
             .plan => |index| selected = index,
             .free => |at| free = at,
+            .folders => {
+                active = null;
+                shelf.notice = null;
+                if (try chooseFolders(allocator, init.io, config_home, home, &shelf)) {
+                    try refreshShelf(allocator, init.io, &shelf);
+                    notice = shelf.notice orelse try std.fmt.allocPrint(allocator, "Folders saved. {d} books in the library.", .{shelf.books.len});
+                } else notice = shelf.notice orelse "Folder change cancelled.";
+                continue;
+            },
+            .book => |index| {
+                active = null;
+                const entry = shelf.entries[index];
+                var book_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer book_arena.deinit();
+                const work = book_arena.allocator();
+                const path = try std.fs.path.join(work, &.{ shelf.folders.library, entry.file });
+                const bytes = std.Io.Dir.cwd().readFileAlloc(init.io, path, work, .limited(256 << 20)) catch |err| {
+                    notice = try std.fmt.allocPrint(allocator, "Cannot open {s}: {s}.", .{ entry.title, @errorName(err) });
+                    continue;
+                };
+                const doc = document.parse(work, bytes) catch |err| {
+                    notice = try std.fmt.allocPrint(allocator, "{s} is not a readable Kata document ({s}). Re-run ingest.", .{ entry.title, @errorName(err) });
+                    continue;
+                };
+                const exit = try book_reader.run(std.heap.page_allocator, init.io, doc, entry.file, base, shelf.folders.library);
+                if (exit == .quit) return;
+                notice = "Library";
+                continue;
+            },
         }
         const entry = plans.entries.items[selected];
         var session_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -193,6 +308,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         switch (target) {
             .plan => |index| target_plan = index,
             .free => |at| target_free = at,
+            .book, .folders => unreachable, // only chosen from the Library menu
         }
         const target_entry = plans.entries.items[target_plan];
         const target_path = if (target_free) |at| try reading.path(temporary, base, at, null) else try catalog.progressPath(temporary, base, base_hash, target_entry.hash);

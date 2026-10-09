@@ -1,17 +1,86 @@
 # EPUB ingest — development plan (next push)
 
-Status (2026-10-09, before 3:10 pm reset): 92/92 unit tests pass.
-- `src/ingest.zig`: types + stage stubs (`error.NotImplemented`). Not wired in.
-- `src/epub.zig` DONE for step 2: in-memory zip central directory + deflate
-  (`Archive.init/find/read`), `attribute`/`Tags` scanners, `package()` →
-  title, author, spine member paths, toc (nav.xhtml or NCX). Test opens both
-  samples (Psalter: 33 spine items, BMS: 29), reads every spine member.
-- TODO in epub.zig: `checkDrm` currently rejects ANY encryption.xml; allow
-  font obfuscation (`http://www.idpf.org/2008/embedding`,
-  `http://ns.adobe.com/pdf/enc#RC`). Zip64 not handled (fine for samples).
-- NEXT: step 3 (XHTML tokenizer + block builder), then step 6 (decide output
-  format) and 4/5 rules; then 7–9; step 1 (folder prompt) can go any time.
-- Installed ~/.local/bin/kata does NOT include epub/ingest (not user-visible).
+Status (2026-10-09 evening): ingest WORKS end to end and is installed.
+106/106 unit tests; tests/ingest-pty.py + all other suites pass.
+
+Done (files):
+- `src/epub.zig` — in-memory zip + deflate, container/OPF/spine/TOC, DRM check
+  (font obfuscation allowed; other encryption.xml methods / rights.xml refused).
+- `src/xhtml.zig` — tolerant tokenizer (comments, CDATA, PIs, quoted `>`,
+  namespaced tags, entities).
+- `src/convert.zig` — XHTML → blocks. Generic rules: h1–h6, p, verse /
+  superscription / liturgical classes, pre (whitespace kept), li, dt/dd, tr
+  (cells joined with " │ "), figure (caption or "[image: alt]"), footnotes,
+  sup → [n], blockquote/aside/sidebar/note → quote, br → newline. Skipped:
+  head/script/style/svg/math/nav, index & toc sections, ornaments, indexterm
+  anchors. Page labels from epub:type=pagebreak/role=doc-pagebreak. Verse
+  numbers inferred per heading and corrected by explicit `verse-number`
+  spans (Psalter: 0 mismatches, Psalm 1 = 6 verses, Psalm 118 = 176).
+- `src/document.zig` — on-disk format `KATA-DOC 1` (TSV, escaped text),
+  write + parse, round-trip tested.
+- `src/ingest.zig` — folders.json (config/kata), normalizeFolder (~/ expand,
+  absolute required), run(): size+mtime → sha256 → converter version; atomic
+  writes; manifest `.kata-manifest.json`, index `.kata-index.json` (reuses
+  unchanged entries); orphans reported, never deleted.
+- `src/book_reader.zig` — single-pane reader: verse gutter, page rules, code
+  colour/indent, `[`/`]` chapters, `t` chapter picker, `/` search + panel +
+  highlight + n/N, position saved to `<state>.books/<hash>.json`.
+- `src/app.zig` — first-run folder prompt (tui.prompt), startup ingest check
+  (only new/changed), books listed in Library after Bible, last Library
+  entry "Ingest folders" to change them.
+- `src/cli.zig` — `kata ingest [--force] [--ingest-dir P --library-dir P]`.
+- All 10 examplePubs convert without errors (5.9 s cold, ~0.02 s cached).
+
+Known gaps / next ideas:
+- Front matter (dedication, title pages) can render as many one-line
+  paragraphs where the source uses a `<p>` per line; could merge short
+  consecutive `prose`/`quote` lines.
+- No Bible-style parallel alignment of the Psalter (could become a 4th Psalms
+  pane later; it is already LXX-numbered).
+- Repeated running header/footer stripping not implemented (no sample needs
+  it; PDF-converted EPUBs would).
+- Tables are flattened to rows; images are placeholders.
+- Zip64 not supported. Search in a book is per-document only.
+- Folder prompt has no file browser; paths are typed (paste works).
+
+## Images (2026-10-09, stages 1–3 done; stage 4 next)
+
+Done:
+1. Ingest copies images: `<library>/<book>.assets/<zip_path_with_underscores>`
+   (written before the document; shared images copied once). Blocks of kind
+   `image` hold the asset file name. `img` inside figures or outside any block
+   become image blocks; inline icons in text are ignored. Converter v2 →
+   existing books re-ingest automatically. BMS: 185 image blocks, 179 files.
+2. Book reader shows `▣ image · i opens it (name)`; `i` opens the image on
+   screen (else nearest above in the chapter) via `xdg-open` / `open` / `start`,
+   detached (pgid 0, stdio ignored). Tested with a fake xdg-open in ingest-pty.
+3. `src/graphics.zig`: capability query = kitty APC `a=q` + `CSI 16t` (cell px)
+   + DA1 `CSI c` (always answered, terminates the wait). DA1 attribute `4` →
+   sixel; kitty `;OK` → kitty (preferred). `tui.detectGraphics(ms)`;
+   `kata --detect-graphics` prints the result. Simulated foot reply → sixel
+   10×20; silent terminal → gives up in ~0.5 s. NOT yet called at app
+   startup and NOT yet verified in the user's real foot window — ask the user
+   to run `kata --detect-graphics` in foot first.
+
+Stage 4 plan — inline Sixel (user's terminal: foot; Ghostty → kitty later):
+- Call detectGraphics(300) once in app.run right after Terminal.init (before
+  the first menu); pass Capabilities into book_reader.run.
+- PNG decoder (src/png.zig): zlib via std.compress.flate (container .zlib),
+  filters 0–4, color types 0/2/3/4/6, bit depth 8 (+1/2/4 palette), no
+  interlace first (fall back to placeholder for Adam7). JPEG: placeholder.
+- Scale to text column width in px (cols × cell_width), cap height ≈ ½ screen;
+  box/area-average downscale. Quantize: fixed 6×6×6 cube + 16 grays (no
+  dithering first) → sixel palette; encode with RLE (`!n`).
+- Reader layout: an image block reserves ceil(h_px / cell_height) blank lines;
+  draw the sixel at its first visible row after the text frame. Partially
+  scrolled images: crop rows to the visible band (re-encode the cropped band;
+  cache full decoded+scaled RGB per (asset,width), encode per visible band).
+- Cache: decoded/scaled bitmap in memory LRU (~32 MB). Keep `i` fallback.
+- Kitty (later, Ghostty): `a=T,f=100` send PNG base64 once per id, place with
+  `a=p`; crop with source rect x,y,w,h. No decoder needed.
+- Tests: png.zig unit tests on 2 sample PNGs (known dims/pixels), sixel encoder
+  golden on a tiny image, PTY test asserting `ESC P q` emitted only when DA1
+  reply includes 4.
 
 ## Agreed requirements (from the user)
 
