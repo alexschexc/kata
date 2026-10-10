@@ -74,8 +74,15 @@ pub fn interrupt() void {
 pub fn size() !types.Size {
     var value: c.struct_winsize = std.mem.zeroes(c.struct_winsize);
     if (c.ioctl(1, c.TIOCGWINSZ, &value) != 0) return error.TerminalSize;
-    return .{ .columns = if (value.ws_col > 0) value.ws_col else 100, .rows = if (value.ws_row > 0) value.ws_row else 30 };
+    return .{ .columns = if (value.ws_col > 0) value.ws_col else 100, .rows = if (value.ws_row > 0) value.ws_row else 30, .pixel_width = value.ws_xpixel, .pixel_height = value.ws_ypixel };
 }
+/// True when input is waiting (non-blocking check), so callers can apply
+/// several keys before an expensive redraw.
+pub fn pending() bool {
+    var descriptor = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
+    return poll(@ptrCast(&descriptor), 1, 0) > 0 and (descriptor.revents & c.POLLIN) != 0;
+}
+
 pub fn readByte() !types.Read {
     var descriptor = c.struct_pollfd{ .fd = 0, .events = c.POLLIN, .revents = 0 };
     const ready = poll(@ptrCast(&descriptor), 1, 80);

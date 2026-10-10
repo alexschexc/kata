@@ -19,6 +19,10 @@ pub const document = @import("document.zig");
 pub const convert = @import("convert.zig");
 pub const book_reader = @import("book_reader.zig");
 pub const graphics = @import("graphics.zig");
+pub const png = @import("png.zig");
+pub const sixel = @import("sixel.zig");
+pub const jpeg = @import("jpeg.zig");
+pub const inline_image = @import("inline_image.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

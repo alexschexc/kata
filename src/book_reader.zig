@@ -7,6 +7,8 @@ const document = @import("document.zig");
 const layout = @import("layout.zig");
 const search = @import("search.zig");
 const tui = @import("tui.zig");
+const inline_image = @import("inline_image.zig");
+const graphics = @import("graphics.zig");
 
 const paper = "\x1b[48;2;21;25;34m";
 const ink = "\x1b[38;2;224;215;191m";
@@ -27,6 +29,9 @@ const Line = struct {
     full: []const u8,
     gutter: []const u8 = "",
     style: Style = .body,
+    /// For inline images: asset name and which reserved row this line is.
+    image: []const u8 = "",
+    image_row: u16 = 0,
 
     const Style = enum { body, heading, code, quote, note, figure, page };
 };
@@ -69,6 +74,12 @@ fn wrapCode(allocator: std.mem.Allocator, text: []const u8, width: usize, out: *
 
 /// Lays out one chapter at `width` columns (text column excludes the gutter).
 fn render(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize) ![]Line {
+    return renderWith(allocator, chapter, width, null, 0);
+}
+
+/// `images` (when inline images are enabled) reserves rows for each image
+/// block instead of the placeholder line; `max_rows` caps image height.
+fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize, images: ?*inline_image.Renderer, max_rows: usize) ![]Line {
     var lines: std.ArrayList(Line) = .empty;
     var page: []const u8 = "";
     for (chapter.blocks, 0..) |block, index| {
@@ -86,6 +97,10 @@ fn render(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize)
             .table_row => try std.fmt.allocPrint(allocator, "  {s}", .{block.text}),
             .heading => if (block.level <= 1) try std.fmt.allocPrint(allocator, "{s}", .{block.text}) else block.text,
             else => block.text,
+        };
+        if (block.kind == .image) if (images) |renderer| if (renderer.rows(block.text, width, max_rows)) |reserved| {
+            for (0..reserved) |r| try lines.append(allocator, .{ .block = index, .text = "", .full = "", .style = .figure, .image = block.text, .image_row = @intCast(r) });
+            continue;
         };
         const gutter = if (block.verse > 0) try std.fmt.allocPrint(allocator, "{d}", .{block.verse}) else "";
         var wrapped: std.ArrayList([]const u8) = .empty;
@@ -174,7 +189,7 @@ fn openImage(io: std.Io, path: []const u8) !void {
     _ = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .pgid = if (@import("builtin").os.tag == .windows) null else 0 });
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8) !Exit {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities) !Exit {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -195,6 +210,16 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
     var old: tui.Size = .{ .columns = 0, .rows = 0 };
     defer tui.setTextInput(false);
     var exit: Exit = .quit;
+    var images: inline_image.Renderer = .{
+        .allocator = gpa,
+        .io = io,
+        .dir = try std.fmt.allocPrint(allocator, "{s}/{s}.assets", .{ library_dir, file }),
+        .caps = caps,
+    };
+    defer images.deinit();
+    // Kitty keeps image data in the terminal; free it when leaving the book.
+    defer if (images.caps.protocol == .kitty) tui.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
+    var laid_height: usize = 0;
 
     loop: while (!tui.isInterrupted()) {
         const size = try tui.screenSize();
@@ -204,16 +229,23 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
         }
         const columns = size.columns;
         const height = size.rows;
+        if (images.caps.protocol != .none and size.pixel_width >= columns and size.pixel_height >= height) {
+            const cw: u16 = @intCast(size.pixel_width / columns);
+            const ch: u16 = @intCast(size.pixel_height / height);
+            if (images.setCell(cw, ch)) laid_width = 0; // re-reserve image rows
+        }
         const panel_width: usize = if (!finder.open) 0 else if (columns >= 72) @min(64, @max(30, columns * 2 / 5)) else columns;
         const reader_visible = panel_width < columns;
         const text_width = @min(100, (columns - panel_width) -| (gutter_width + 3));
         const body_height = height -| 5;
         const usable = body_height >= 3 and (!reader_visible or text_width >= 20);
-        if (usable and reader_visible and (text_width != laid_width or chapter != laid_chapter)) {
+        const image_rows = @max(4, body_height * 3 / 4);
+        if (usable and reader_visible and (text_width != laid_width or chapter != laid_chapter or (images.enabled() and image_rows != laid_height))) {
             const keep = anchor_block orelse if (lines.len > 0) lines[@min(top, lines.len - 1)].block else 0;
             _ = wrapping.reset(.retain_capacity);
-            lines = try render(wrapping.allocator(), doc.chapters[chapter], text_width);
+            lines = try renderWith(wrapping.allocator(), doc.chapters[chapter], text_width, if (images.enabled()) &images else null, image_rows);
             laid_width = text_width;
+            laid_height = image_rows;
             laid_chapter = chapter;
             top = 0;
             for (lines, 0..) |line, i| if (line.block >= keep) {
@@ -226,11 +258,25 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
         }
         const max_top = lines.len -| body_height;
         top = @min(top, max_top);
-        if (redraw) {
+        // Apply a burst of keys (held j, fast scrolling) before redrawing:
+        // images make each frame costly, and stale frames only add lag.
+        // (redraw stays pending, so an ignored final byte cannot lose a frame.)
+        if (redraw and !tui.inputPending()) {
             var frame = std.Io.Writer.Allocating.init(allocator);
             defer frame.deinit();
             const w = &frame.writer;
-            try w.writeAll("\x1b[H\x1b[2J" ++ paper ++ ink);
+            // Synchronized update (DEC 2026): the terminal shows the frame only
+            // when complete, so clearing, text, and images never flash.
+            if (images.caps.protocol == .kitty) {
+                // Ghostty treats ED2 (clear screen) as "delete visible
+                // placements and any image left unused", which threw away
+                // the transmitted figure on the first scroll. Erase line by
+                // line instead (EL keeps images); placements are reset
+                // explicitly in beginFrame.
+                try w.writeAll("\x1b[?2026h" ++ paper ++ ink);
+                for (1..height + 1) |row| try w.print("\x1b[{d};1H\x1b[2K", .{row});
+                try w.writeAll("\x1b[H");
+            } else try w.writeAll("\x1b[?2026h\x1b[H\x1b[2J" ++ paper ++ ink);
             if (!usable) {
                 try w.writeAll("Kata: enlarge the terminal. q quits.");
             } else {
@@ -270,6 +316,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
                         try w.writeAll("\x1b[0m" ++ paper);
                     }
                 }
+                try images.beginFrame(w);
+                if (reader_visible and images.enabled()) {
+                    // Paint each visible image once, from its first visible row.
+                    var row: usize = 0;
+                    while (row < body_height) {
+                        const at = top + row;
+                        if (at >= lines.len) break;
+                        const line = lines[at];
+                        if (line.image.len == 0) {
+                            row += 1;
+                            continue;
+                        }
+                        var count: usize = 0;
+                        while (row + count < body_height and top + row + count < lines.len and lines[top + row + count].image.ptr == line.image.ptr and lines[top + row + count].block == line.block) count += 1;
+                        try w.print("\x1b[{d};{d}H", .{ row + 3, gutter_width + 3 });
+                        if (!try images.draw(w, line.image, text_width, image_rows, line.image_row, count)) {
+                            try w.writeAll(dim ++ "▣ image could not be decoded · i opens it");
+                        }
+                        row += count;
+                    }
+                }
                 if (finder.open) try renderPanel(allocator, w, &finder, doc, columns - panel_width + 1, panel_width, 3, height - 2);
                 try w.print("\x1b[{d};1H" ++ gold, .{height - 1});
                 const help = if (finder.prompt)
@@ -294,6 +361,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
                     try w.writeAll(tui.clipped(status, columns));
                 }
             }
+            try w.writeAll("\x1b[?2026l");
             try tui.writeAll(frame.written());
             redraw = false;
         }

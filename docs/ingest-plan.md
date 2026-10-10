@@ -39,11 +39,47 @@ Known gaps / next ideas:
   pane later; it is already LXX-numbered).
 - Repeated running header/footer stripping not implemented (no sample needs
   it; PDF-converted EPUBs would).
-- Tables are flattened to rows; images are placeholders.
+- Tables are flattened to rows. SVG/GIF/WebP images stay placeholders.
 - Zip64 not supported. Search in a book is per-document only.
 - Folder prompt has no file browser; paths are typed (paste works).
 
-## Images (2026-10-09, stages 1–3 done; stage 4 next)
+## Inline images — stage 4 DONE (Sixel), 2026-10-09
+
+- `src/png.zig`: PNG decoder (all colour types/depths, 5 filters, tRNS,
+  alpha over white), area-average `scale`. Rejects Adam7. All BMS PNGs decode.
+- `src/sixel.zig`: per-image adaptive palette (5-bit buckets, top 256 by
+  frequency, rest → nearest), RLE bands. Verified against libsixel
+  `sixel2png`: Figure 4-9 RMSE ≈ 0.058, 8 ms encode, ~50 KB.
+- `src/inline_image.zig`: `fit` (≤ text column, ≤ ¾ body height, never
+  enlarge), cache of decoded+scaled bitmaps (48 MB cap, cleared when full),
+  `draw` encodes only the visible rows in whole 6-px bands.
+- `book_reader.zig`: image blocks reserve rows when sixel is available, are
+  painted after the text frame from their first visible row (cropped when
+  scrolled), placeholder otherwise. Key bursts coalesce (`tui.inputPending`)
+  so held `j` does not queue a frame per key.
+- `graphics.zig`: also asks `CSI 14t` (text area px) and derives the cell
+  size when `CSI 16t` is unsupported. Detection runs once in app.run (300 ms
+  cap); `KATA_IMAGES=off` disables it.
+- Tests: png/sixel/inline_image unit tests; `tests/sixel-pty.py` (foot-like
+  replies, placement, crop, libsixel decode, no sixel without support,
+  coalescing).
+- Verified in a real foot window (scale 1.6): cell size must come from the
+  window-size ioctl, not CSI 16t; frames use synchronized update (?2026).
+- `src/jpeg.zig`: baseline JPEG (Huffman, any sampling, restarts, gray,
+  YCbCr, Adobe CMYK/YCCK); matches ImageMagick within 0.3% RMSE. Progressive
+  (SOF2, 5 of 583 samples) also decoded (2026-10-10). ICC profiles ignored.
+- Kitty graphics (2026-10-10): preferred when the terminal answers the
+  `a=q` probe (Ghostty, kitty, WezTerm). Each image is transmitted once
+  (RGB, chunked base64, q=2) and placed per frame with a source-rect crop
+  (`y=`,`h=`,`r=`); every frame starts with `a=d,d=a` so scrolling leaves
+  no stale placements. Ghostty: ED2 (`CSI 2J`) deletes visible
+  placements AND images left unused, so kitty frames erase line by line
+  (`CSI 2K`) instead; found when images vanished on first scroll in real
+  Ghostty (2026-10-10). Fix confirmed by the user in real Ghostty.
+- Next ideas: `+`/`-` to change image
+  size; skip sixel re-encode of unchanged images on redraw.
+
+## Images (2026-10-09, stages 1–3 done)
 
 Done:
 1. Ingest copies images: `<library>/<book>.assets/<zip_path_with_underscores>`

@@ -112,6 +112,28 @@ fn elementText(xml: []const u8, local: []const u8) ?[]const u8 {
     return std.mem.trim(u8, xml[start..end], " \t\r\n");
 }
 
+/// Metadata text with entities decoded and whitespace collapsed.
+fn decodeText(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const xhtml = @import("xhtml.zig");
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '&') if (xhtml.entityAt(raw, i)) |entity| {
+            var buf: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(if (entity.cp == 0xA0) ' ' else entity.cp, &buf) catch 0;
+            try out.appendSlice(allocator, buf[0..n]);
+            i += entity.len;
+            continue;
+        };
+        const c = raw[i];
+        if (std.ascii.isWhitespace(c)) {
+            if (out.items.len > 0 and out.items[out.items.len - 1] != ' ') try out.append(allocator, ' ');
+        } else try out.append(allocator, c);
+        i += 1;
+    }
+    return std.mem.trim(u8, out.items, " ");
+}
+
 pub const Item = struct { id: []const u8, href: []const u8, media_type: []const u8, properties: []const u8 };
 
 pub const Package = struct {
@@ -202,11 +224,17 @@ pub fn package(allocator: std.mem.Allocator, archive: Archive) !Package {
     }
     if (spine.items.len == 0) return error.EmptySpine;
     return .{
-        .title = elementText(opf, "title") orelse "",
-        .author = elementText(opf, "creator") orelse "",
+        .title = try decodeText(allocator, elementText(opf, "title") orelse ""),
+        .author = try decodeText(allocator, elementText(opf, "creator") orelse ""),
         .spine = spine.items,
         .toc = toc,
     };
+}
+
+test "metadata entities decode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("A — B & C", try decodeText(arena.allocator(), "A &#8212;\n  B &amp; C"));
 }
 
 test "attribute and tag scanning are namespace and quote tolerant" {

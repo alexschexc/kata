@@ -11,8 +11,33 @@ pub const Capabilities = struct {
     /// Character cell size in pixels (0 when the terminal did not say).
     cell_width: u16 = 0,
     cell_height: u16 = 0,
+    /// Text area size in pixels (XTWINOPS 14), used when 16 is unsupported.
+    area_width: u16 = 0,
+    area_height: u16 = 0,
     /// The terminal answered at all (DA1 seen before the timeout).
     answered: bool = false,
+
+    /// Cell size from the window-size ioctl. This is the unit sixel pixels
+    /// are drawn in; foot at fractional scaling reports a different (scaled)
+    /// cell size via CSI 16t, which made images overflow their rows.
+    pub fn withWindowPixels(self: Capabilities, columns: usize, rows: usize, pixel_width: usize, pixel_height: usize) Capabilities {
+        var caps = self;
+        if (columns > 0 and rows > 0 and pixel_width >= columns and pixel_height >= rows) {
+            caps.cell_width = @intCast(pixel_width / columns);
+            caps.cell_height = @intCast(pixel_height / rows);
+        }
+        return caps;
+    }
+
+    /// Derives the cell size from the text area when only that was reported.
+    pub fn withCellsFrom(self: Capabilities, columns: usize, rows: usize) Capabilities {
+        var caps = self;
+        if ((caps.cell_width == 0 or caps.cell_height == 0) and caps.area_width > 0 and caps.area_height > 0 and columns > 0 and rows > 0) {
+            caps.cell_width = @intCast(caps.area_width / columns);
+            caps.cell_height = @intCast(caps.area_height / rows);
+        }
+        return caps;
+    }
 
     pub fn describe(self: Capabilities) []const u8 {
         return switch (self.protocol) {
@@ -24,7 +49,7 @@ pub const Capabilities = struct {
 };
 
 /// Kitty query (1×1 RGB, query action), cell size, then DA1 last.
-pub const query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\" ++ "\x1b[16t" ++ "\x1b[c";
+pub const query = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\" ++ "\x1b[16t" ++ "\x1b[14t" ++ "\x1b[c";
 
 /// Parses everything the terminal sent back. Returns null until the DA1
 /// reply (`ESC [ ? … c`) has arrived, i.e. while more replies may follow.
@@ -59,9 +84,15 @@ pub fn parse(reply: []const u8) ?Capabilities {
                     };
                 } else if (final == 't') {
                     var fields = std.mem.splitScalar(u8, params, ';');
-                    if (std.mem.eql(u8, fields.next() orelse "", "6")) {
-                        caps.cell_height = std.fmt.parseInt(u16, fields.next() orelse "", 10) catch 0;
-                        caps.cell_width = std.fmt.parseInt(u16, fields.next() orelse "", 10) catch 0;
+                    const kind = fields.next() orelse "";
+                    const h = std.fmt.parseInt(u16, fields.next() orelse "", 10) catch 0;
+                    const w = std.fmt.parseInt(u16, fields.next() orelse "", 10) catch 0;
+                    if (std.mem.eql(u8, kind, "6")) {
+                        caps.cell_height = h;
+                        caps.cell_width = w;
+                    } else if (std.mem.eql(u8, kind, "4")) {
+                        caps.area_height = h;
+                        caps.area_width = w;
                     }
                 }
             },
@@ -79,6 +110,21 @@ test "foot-style reply: sixel via DA1 attribute 4 and cell size" {
     try std.testing.expectEqual(Protocol.sixel, caps.protocol);
     try std.testing.expectEqual(@as(u16, 10), caps.cell_width);
     try std.testing.expectEqual(@as(u16, 20), caps.cell_height);
+}
+
+test "cell size falls back to text area divided by the grid" {
+    const caps = parse("\x1b[4;900;1500t\x1b[?62;4c").?.withCellsFrom(150, 45);
+    try std.testing.expectEqual(@as(u16, 10), caps.cell_width);
+    try std.testing.expectEqual(@as(u16, 20), caps.cell_height);
+}
+
+test "window pixel size overrides the scaled CSI 16t cell size" {
+    // Real foot at scale 1.6: CSI 16t says 13x35, the ioctl says 1830x1064 for 183x38.
+    const caps = parse("\x1b[6;35;13t\x1b[?62;4;22;28;52c").?.withWindowPixels(183, 38, 1830, 1064);
+    try std.testing.expectEqual(@as(u16, 10), caps.cell_width);
+    try std.testing.expectEqual(@as(u16, 28), caps.cell_height);
+    const unknown = parse("\x1b[6;35;13t\x1b[?62;4c").?.withWindowPixels(183, 38, 0, 0);
+    try std.testing.expectEqual(@as(u16, 13), unknown.cell_width);
 }
 
 test "kitty reply wins over sixel; no DA1 means keep waiting" {

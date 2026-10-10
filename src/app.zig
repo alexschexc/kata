@@ -173,6 +173,8 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     if (folders_saved) |f| shelf.folders = f;
     var terminal = try tui.Terminal.init();
     defer terminal.deinit();
+    // One capability query per launch (bounded); KATA_IMAGES=off disables.
+    const graphics_caps: @import("graphics.zig").Capabilities = if (init.environ_map.get("KATA_IMAGES")) |v| (if (std.mem.eql(u8, v, "off")) .{} else tui.detectGraphics(300)) else tui.detectGraphics(300);
     if (active == null) {
         if (folders_saved == null and shelf.notice == null) {
             if (!try chooseFolders(allocator, init.io, config_home, home, &shelf) and shelf.notice == null) {
@@ -219,7 +221,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
                     notice = try std.fmt.allocPrint(allocator, "{s} is not a readable Kata document ({s}). Re-run ingest.", .{ entry.title, @errorName(err) });
                     continue;
                 };
-                const exit = try book_reader.run(std.heap.page_allocator, init.io, doc, entry.file, base, shelf.folders.library);
+                const exit = try book_reader.run(std.heap.page_allocator, init.io, doc, entry.file, base, shelf.folders.library, graphics_caps);
                 if (exit == .quit) return;
                 notice = "Library";
                 continue;

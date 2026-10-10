@@ -14,6 +14,9 @@ pub fn Queue(comptime capacity: usize) type {
             self.head.store(next, .release);
             return true;
         }
+        pub fn len(self: *@This()) usize {
+            return (self.head.load(.acquire) + capacity - self.tail.load(.monotonic)) % capacity;
+        }
         pub fn pop(self: *@This()) ?u8 {
             const at = self.tail.load(.monotonic);
             if (at == self.head.load(.acquire)) return null;

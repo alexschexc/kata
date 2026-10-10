@@ -145,6 +145,10 @@ pub fn size() !types.Size {
     return .{ .columns = geometry.extent(info.srWindow.Left, info.srWindow.Right, 100), .rows = geometry.extent(info.srWindow.Top, info.srWindow.Bottom, 30) };
 }
 
+pub fn pending() bool {
+    return queue.len() > 0;
+}
+
 pub fn readByte() !types.Read {
     var waited: usize = 0;
     while (waited < 80) : (waited += 5) {

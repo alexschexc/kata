@@ -173,6 +173,8 @@ pub fn run(allocator: std.mem.Allocator, rows: []const layout.Row, state: *stora
 }
 
 pub const isInterrupted = backend.isInterrupted;
+/// Input already waiting: skip redrawing until the burst is applied.
+pub const inputPending = backend.pending;
 pub const Size = @import("terminal_types.zig").Size;
 
 /// Queries the terminal's image support. Call after Terminal.init (raw mode),
@@ -189,7 +191,10 @@ pub fn detectGraphics(timeout_ms: u32) @import("graphics.zig").Capabilities {
             .byte => |byte| {
                 reply[len] = byte;
                 len += 1;
-                if (byte == 'c') if (graphics.parse(reply[0..len])) |caps| return caps;
+                if (byte == 'c') if (graphics.parse(reply[0..len])) |caps| {
+                    const size = backend.size() catch return caps;
+                    return caps.withCellsFrom(size.columns, size.rows).withWindowPixels(size.columns, size.rows, size.pixel_width, size.pixel_height);
+                };
             },
             .timeout => waited += 80,
             .ignored => {},

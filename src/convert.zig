@@ -7,7 +7,7 @@ const epub = @import("epub.zig");
 const document = @import("document.zig");
 const Kind = document.Kind;
 
-pub const version: u32 = 2;
+pub const version: u32 = 3;
 
 pub const Stats = struct {
     chapters: usize = 0,
@@ -230,6 +230,8 @@ const Builder = struct {
 
     fn lineBreak(self: *Builder) !void {
         if (self.hide > 0 or self.number > 0) return;
+        // Headings render on one line: a break is just a space there.
+        if (self.innermostBlock()) |f| if (f.kind == .heading) return self.appendCodepoint(' ');
         while (self.buf.items.len > 0 and self.buf.items[self.buf.items.len - 1] == ' ') self.buf.items.len -= 1;
         if (self.buf.items.len > 0) try self.buf.append(self.allocator, '\n');
     }
