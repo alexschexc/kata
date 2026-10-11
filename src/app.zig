@@ -13,6 +13,8 @@ const search = @import("search.zig");
 const ingest = @import("ingest.zig");
 const document = @import("document.zig");
 const book_reader = @import("book_reader.zig");
+const plan_builder = @import("plan_builder.zig");
+const reading_units = @import("reading_units.zig");
 
 /// Ingested library state for this run.
 const Shelf = struct {
@@ -24,6 +26,9 @@ const Shelf = struct {
     /// re-read or re-parse). Reset whenever the index is reloaded.
     cache: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.page_allocator),
     docs: []?document.Document = &.{},
+    psalter: ?[]const source.Verse = null,
+    psalter_loaded: bool = false,
+    psalter_name: []const u8 = "htm",
 };
 
 fn shelve(allocator: std.mem.Allocator, shelf: *Shelf, entries: []const ingest.IndexEntry) !void {
@@ -34,6 +39,8 @@ fn shelve(allocator: std.mem.Allocator, shelf: *Shelf, entries: []const ingest.I
     _ = shelf.cache.reset(.free_all);
     shelf.docs = try shelf.cache.allocator().alloc(?document.Document, entries.len);
     @memset(shelf.docs, null);
+    shelf.psalter = null;
+    shelf.psalter_loaded = false;
 }
 
 const BookResult = struct { exit: book_reader.Exit, notice: ?[]const u8 = null };
@@ -47,6 +54,44 @@ fn psalterIndex(shelf: *Shelf) ?usize {
 }
 
 /// Parsed book `index`, loaded from disk on first use only.
+/// The ingested Psalter as Psalms verses (Greek/Latin numbering: psalm from
+/// the heading's arabic number, verse numbers as printed). Superscriptions
+/// are not verses and are left out. Built once per shelf.
+fn psalterVerses(io: std.Io, shelf: *Shelf) ?[]const source.Verse {
+    if (shelf.psalter_loaded) return shelf.psalter;
+    shelf.psalter_loaded = true;
+    const index = psalterIndex(shelf) orelse return null;
+    const doc = loadBook(io, shelf, index) catch return null;
+    var verses: std.ArrayList(source.Verse) = .empty;
+    const allocator = shelf.cache.allocator();
+    for (doc.chapters) |chapter| {
+        var psalm: u16 = 0;
+        for (chapter.blocks) |block| {
+            if (block.kind == .heading) {
+                psalm = if (book_reader.psalmNumber(block.text)) |n| n else if (block.level <= 1) 0 else psalm;
+                continue;
+            }
+            if (psalm == 0 or block.kind != .verse or block.verse == 0) continue;
+            verses.append(allocator, .{ .book = "Psalms", .chapter = psalm, .number = @intCast(@min(block.verse, std.math.maxInt(u16))), .text = block.text }) catch return null;
+        }
+    }
+    if (verses.items.len == 0) return null;
+    shelf.psalter = verses.items;
+    shelf.psalter_name = "htm";
+    return shelf.psalter;
+}
+
+/// Verses of `edition` within `reference` (Psalms chapters selected by the
+/// reference's own chapter/verse selection).
+fn editionVerses(allocator: std.mem.Allocator, edition: []const source.Verse, reference: source.Reference) ![]const source.Verse {
+    if (!std.mem.eql(u8, reference.book, "Psalms")) return &.{};
+    const colon = std.mem.indexOfScalar(u8, reference.query, ':') orelse reference.query.len;
+    const selection = try @import("bundled.zig").Selection.init(reference.query[colon..]);
+    var out: std.ArrayList(source.Verse) = .empty;
+    for (edition) |verse| if (selection.matches(verse.chapter, verse.number)) try out.append(allocator, verse);
+    return out.items;
+}
+
 fn loadBook(io: std.Io, shelf: *Shelf, index: usize) !document.Document {
     if (shelf.docs[index]) |doc| return doc;
     const allocator = shelf.cache.allocator();
@@ -58,23 +103,18 @@ fn loadBook(io: std.Io, shelf: *Shelf, index: usize) !document.Document {
     return doc;
 }
 
-/// Reads library book `index`; `psalm` opens a Psalter at that psalm,
-/// `start` at a block (otherwise the saved position).
-fn openBook(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, psalm: ?u16) !BookResult {
-    return openBookAt(allocator, io, shelf, index, base, caps, psalm, null);
+/// Reads library book `index` (at `start_at`, else the saved position).
+fn openBook(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities) !BookResult {
+    return openBookAt(allocator, io, shelf, index, base, caps, null, null);
 }
 
-fn openBookAt(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, psalm: ?u16, start_at: ?book_reader.Position) !BookResult {
+fn openBookAt(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, start_at: ?book_reader.Position, portion: ?book_reader.Portion) !BookResult {
     const entry = shelf.entries[index];
     const doc = loadBook(io, shelf, index) catch |err| {
         return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "Cannot open {s}: {s}. Re-run ingest.", .{ entry.title, @errorName(err) }) };
     };
-    var position = start_at;
-    if (psalm) |number| {
-        position = book_reader.psalmPosition(doc, number) orelse
-            return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "Psalm {d} not found in {s}.", .{ number, entry.title }) };
-    }
-    return .{ .exit = try book_reader.run(std.heap.page_allocator, io, doc, entry.file, base, shelf.folders.library, caps, position) };
+    const position = start_at;
+    return .{ .exit = try book_reader.run(std.heap.page_allocator, io, doc, entry.file, base, shelf.folders.library, caps, position, portion) };
 }
 
 /// Library-wide search: one query over every converted book, results in a
@@ -117,10 +157,204 @@ fn searchBooks(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, base: []
     while (!tui.isInterrupted()) {
         selected = try tui.choose(allocator, "Search results", description, labels.items, selected, 1) orelse return .{ .exit = .home };
         const hit = found.items[selected];
-        const result = try openBookAt(allocator, io, shelf, hit.book, base, caps, null, hit.position);
+        const result = try openBookAt(allocator, io, shelf, hit.book, base, caps, hit.position, null);
         if (result.exit == .quit) return result;
     }
     return .{ .exit = .home };
+}
+
+fn hasLibrary(entry: catalog.Entry) bool {
+    for (entry.plan.parsed.value.streams) |stream| if (stream.library != null) return true;
+    return false;
+}
+
+fn shelfIndex(shelf: *const Shelf, file: []const u8) ?usize {
+    for (shelf.entries, 0..) |entry, i| if (std.mem.eql(u8, entry.file, file)) return i;
+    return null;
+}
+
+/// Reading units of library book `index` (cached per shelf book + kind).
+fn bookUnits(io: std.Io, shelf: *Shelf, index: usize, unit: []const u8) ![]reading_units.Unit {
+    const doc = try loadBook(io, shelf, index);
+    return reading_units.units(shelf.cache.allocator(), doc, if (std.mem.eql(u8, unit, "section")) .section else .chapter);
+}
+
+/// Every converted book with its plan units, for the plan builder.
+fn libraryOptions(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf) ![]plan_builder.LibraryOption {
+    tui.status("Measuring chapters and sections of converted books…") catch {};
+    var out: std.ArrayList(plan_builder.LibraryOption) = .empty;
+    for (shelf.entries, 0..) |entry, i| {
+        const doc = loadBook(io, shelf, i) catch continue;
+        const chapters = bookUnits(io, shelf, i, "chapter") catch continue;
+        const sections = bookUnits(io, shelf, i, "section") catch continue;
+        if (chapters.len == 0) continue;
+        var chapter_labels = try allocator.alloc([]const u8, chapters.len);
+        for (chapters, 0..) |u, k| chapter_labels[k] = u.label;
+        var section_labels = try allocator.alloc([]const u8, sections.len);
+        for (sections, 0..) |u, k| section_labels[k] = u.label;
+        try out.append(allocator, .{ .file = entry.file, .title = entry.title, .chapter_name = reading_units.chapterName(doc), .section_name = reading_units.sectionName(doc), .chapters = chapter_labels, .sections = section_labels });
+    }
+    return out.items;
+}
+
+/// One day's reading, grouped: consecutive Bible chapters form one item;
+/// consecutive units of one library stream form one portion.
+const DayItem = struct {
+    label: []const u8,
+    /// Bible references ("John:3") for a Bible item.
+    references: []const []const u8 = &.{},
+    book: ?usize = null,
+    start: book_reader.Position = .{},
+    portion: ?book_reader.Portion = null,
+};
+
+fn dayItems(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, entry: catalog.Entry, ordinal: usize) ![]DayItem {
+    const streams = entry.plan.parsed.value.streams;
+    var items: std.ArrayList(DayItem) = .empty;
+    const chapters = try entry.plan.assignments(allocator, ordinal);
+    var i: usize = 0;
+    while (i < chapters.len) {
+        const stream = streams[chapters[i].stream];
+        var j = i;
+        while (j < chapters.len and chapters[j].stream == chapters[i].stream) j += 1;
+        if (stream.library) |file| {
+            const index = shelfIndex(shelf, file) orelse {
+                try items.append(allocator, .{ .label = try std.fmt.allocPrint(allocator, "{s} · not in the library (convert it again)", .{stream.books[0].name}) });
+                i = j;
+                continue;
+            };
+            const units = try bookUnits(io, shelf, index, stream.unit.?);
+            const first = units[@min(chapters[i].chapter - 1, units.len - 1)];
+            const last = units[@min(chapters[j - 1].chapter - 1, units.len - 1)];
+            const label = if (i + 1 == j) first.label else try std.fmt.allocPrint(allocator, "{s}  →  {s}", .{ first.label, last.label });
+            try items.append(allocator, .{
+                .label = try std.fmt.allocPrint(allocator, "{s} · {s}", .{ shelf.entries[index].title, label }),
+                .book = index,
+                .start = .{ .chapter = first.chapter, .block = first.start },
+                .portion = .{ .chapter = last.chapter, .end = last.end, .label = label },
+            });
+        } else {
+            var refs: std.ArrayList([]const u8) = .empty;
+            var text: std.ArrayList(u8) = .empty;
+            try text.appendSlice(allocator, "Bible · ");
+            for (chapters[i..j], 0..) |ch, k| {
+                try refs.append(allocator, try std.fmt.allocPrint(allocator, "{s}:{d}", .{ ch.book, ch.chapter }));
+                if (k > 0) try text.appendSlice(allocator, ", ");
+                try text.print(allocator, "{s} {d}", .{ ch.book, ch.chapter });
+            }
+            try items.append(allocator, .{ .label = text.items, .references = refs.items });
+        }
+        i = j;
+    }
+    return items.items;
+}
+
+const HubExit = enum { home, quit };
+
+/// Daily view for plans with library streams: lists today's portions
+/// (Bible chapters open in the Bible reader, library portions in the book
+/// reader with an end-of-reading marker), marks the day complete, or picks
+/// another day. Progress uses the same state files as Bible plans.
+fn planHub(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, entry: catalog.Entry, base: []const u8, base_hash: *u64, caps: @import("graphics.zig").Capabilities, finder: *search.State) !HubExit {
+    const path = try catalog.progressPath(allocator, base, base_hash.*, entry.hash);
+    var state = try storage.load(allocator, io, path);
+    if (state.plan_hash != 0 and state.plan_hash != entry.hash) return error.PlanChangedUseSeparateState;
+    state.plan_hash = entry.hash;
+    try storage.save(allocator, io, path, state);
+    if (std.mem.eql(u8, base, path)) base_hash.* = entry.hash;
+    try catalog.saveSelected(allocator, io, base, entry.id);
+    const plan = entry.plan;
+    const days = plan.totalDays();
+    var note: []const u8 = "";
+    var selected: usize = 0;
+    while (!tui.isInterrupted()) {
+        const date = try currentDate();
+        const ordinal = state.assignment(date);
+        const finished = !plan.parsed.value.repeat and ordinal >= days;
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const work = arena.allocator();
+        const items: []DayItem = if (finished) &.{} else try dayItems(work, io, shelf, entry, ordinal);
+        var labels: std.ArrayList([]const u8) = .empty;
+        for (items) |item| try labels.append(work, try std.fmt.allocPrint(work, "▸ {s}", .{item.label}));
+        const done_today = state.completed_on >= date;
+        try labels.append(work, if (done_today) "✓ Completed today · next day opens tomorrow" else "✓ Mark today's reading complete");
+        try labels.append(work, "Choose day…");
+        try labels.append(work, "Back to Library");
+        const heading = if (finished) "Plan finished. Choose day… to read again." else try std.fmt.allocPrint(work, "Day {d}/{d}{s} · Enter opens a reading; finish at the end-of-reading marker, then m.", .{ ordinal % days + 1, days, if (done_today) " · completed today" else "" });
+        const description = try std.fmt.allocPrint(work, "{s}{s}", .{ note, heading });
+        note = "";
+        const choice = try tui.choose(work, plan.name(), description, labels.items, @min(selected, labels.items.len - 1), 1) orelse return .home;
+        selected = choice;
+        if (choice < items.len) {
+            const item = items[choice];
+            if (item.book) |index| {
+                const result = try openBookAt(allocator, io, shelf, index, base, caps, item.start, item.portion);
+                if (result.exit == .quit) return .quit;
+                if (result.notice) |n| note = try std.fmt.allocPrint(allocator, "{s} ", .{n});
+            } else if (item.references.len > 0) {
+                var rows: std.ArrayList(layout.Row) = .empty;
+                for (item.references) |raw| {
+                    const reference = try source.Reference.init(work, raw);
+                    try rows.appendSlice(work, try layout.alignVerses(work, try source.streams(work, io, reference)));
+                }
+                const scope = std.hash.Wyhash.hash(entry.hash, std.mem.asBytes(&ordinal));
+                if (state.scope_hash != scope) {
+                    state.positions = .{ .{}, .{}, .{} };
+                    state.scope_hash = scope;
+                }
+                const action = try tui.runInTerminal(work, rows.items, &state, .{
+                    .title = try std.fmt.allocPrint(work, "{s} · day {d}/{d}", .{ plan.name(), ordinal % days + 1, days }),
+                    .plan_mode = false,
+                    .today = date,
+                    .state_path = path,
+                    .io = io,
+                    .notice = "Plan reading · m returns to the plan",
+                    .search = finder,
+                });
+                try storage.save(allocator, io, path, state);
+                if (action == null) return .quit;
+            }
+            continue;
+        }
+        switch (choice - items.len) {
+            0 => if (!finished) {
+                state.complete(date) catch |err| switch (err) {
+                    error.AlreadyCompletedToday => {
+                        note = "Already completed today. ";
+                        continue;
+                    },
+                    else => return err,
+                };
+                try storage.save(allocator, io, path, state);
+                note = "Completed and saved. ";
+            },
+            1 => {
+                var day_labels: std.ArrayList([]const u8) = .empty;
+                for (0..days) |day| {
+                    const day_items = try dayItems(work, io, shelf, entry, day);
+                    var text: std.ArrayList(u8) = .empty;
+                    try text.print(work, "Day {d} · ", .{day + 1});
+                    for (day_items, 0..) |item, k| {
+                        if (k > 0) try text.appendSlice(work, "  |  ");
+                        try text.appendSlice(work, item.label);
+                    }
+                    try day_labels.append(work, text.items);
+                }
+                const day = try tui.choose(work, "Choose plan day", "Earlier days in this cycle count as complete; the chosen day is pending.", day_labels.items, ordinal % days, 1) orelse continue;
+                if (!plan.parsed.value.repeat) {
+                    state.next_day = 0;
+                    state.completed_on = 0;
+                }
+                try state.startAtDay(day + 1, days, date);
+                try storage.save(allocator, io, path, state);
+                note = try std.fmt.allocPrint(allocator, "Moved to day {d}. ", .{day + 1});
+                selected = 0;
+            },
+            else => return .home,
+        }
+    }
+    return .quit;
 }
 
 /// Quick startup check: convert only new/changed EPUBs, then load the index.
@@ -140,6 +374,81 @@ fn refreshShelf(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf) !void {
 
 /// First-run (or on request) folder choice. Never guesses: the user confirms
 /// or edits each absolute path. Returns false when cancelled.
+/// Nearest existing directory at or above `path` ("/" at worst).
+fn existingAncestor(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    var at = path;
+    while (true) {
+        if (std.Io.Dir.cwd().openDir(io, at, .{})) |dir| {
+            var d = dir;
+            d.close(io);
+            return allocator.dupe(u8, at);
+        } else |_| {}
+        at = std.fs.path.dirname(at) orelse return allocator.dupe(u8, "/");
+    }
+}
+
+/// Subfolder names of `path` (hidden ones only when `hidden`), sorted.
+fn listFolders(allocator: std.mem.Allocator, io: std.Io, path: []const u8, hidden: bool) ![]const []const u8 {
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!hidden and entry.name[0] == '.') continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.ascii.lessThanIgnoreCase(a, b);
+        }
+    }.less);
+    return names.items;
+}
+
+/// Menu-driven folder picker starting at `start` (or its nearest existing
+/// parent). Returns the chosen absolute path, or null when cancelled.
+fn browseFolders(allocator: std.mem.Allocator, io: std.Io, title: []const u8, from: []const u8) !?[]const u8 {
+    var current = try existingAncestor(allocator, io, from);
+    var hidden = false;
+    var note: []const u8 = "";
+    while (!tui.isInterrupted()) {
+        const folders = listFolders(allocator, io, current, hidden) catch |err| blk: {
+            note = try std.fmt.allocPrint(allocator, "Cannot list this folder ({s}). ", .{@errorName(err)});
+            break :blk &[_][]const u8{};
+        };
+        var labels: std.ArrayList([]const u8) = .empty;
+        try labels.append(allocator, try std.fmt.allocPrint(allocator, "✓ Use this folder: {s}", .{current}));
+        try labels.append(allocator, "↑ Parent folder");
+        try labels.append(allocator, "+ New folder here…");
+        try labels.append(allocator, if (hidden) "· Hide hidden folders" else "· Show hidden folders");
+        for (folders) |name| try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s}/", .{name}));
+        const description = try std.fmt.allocPrint(allocator, "{s}Browsing {s} · {d} folders · Enter opens a folder; choose ✓ to use the current one; Esc returns to typing", .{ note, current, folders.len });
+        note = "";
+        const choice = try tui.choose(allocator, title, description, labels.items, if (folders.len > 0) 4 else 0, 1) orelse return null;
+        switch (choice) {
+            0 => return current,
+            1 => current = std.fs.path.dirname(current) orelse current,
+            2 => {
+                const name = try tui.prompt(allocator, "New folder", try std.fmt.allocPrint(allocator, "Name of the new folder inside {s}", .{current}), "") orelse continue;
+                if (std.mem.indexOfAny(u8, name, "/\\") != null or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) {
+                    note = "Folder names cannot contain slashes. ";
+                    continue;
+                }
+                const path = try std.fs.path.join(allocator, &.{ current, name });
+                std.Io.Dir.cwd().createDirPath(io, path) catch |err| {
+                    note = try std.fmt.allocPrint(allocator, "Cannot create {s}: {s}. ", .{ name, @errorName(err) });
+                    continue;
+                };
+                current = path;
+            },
+            3 => hidden = !hidden,
+            else => current = try std.fs.path.join(allocator, &.{ current, folders[choice - 4] }),
+        }
+    }
+    return null;
+}
+
 fn chooseFolders(allocator: std.mem.Allocator, io: std.Io, config_home: []const u8, home: ?[]const u8, shelf: *Shelf) !bool {
     const suggestion = if (shelf.folders.configured()) shelf.folders else if (home) |h| try ingest.defaultFolders(allocator, h) else ingest.Folders{};
     var folders: ingest.Folders = .{};
@@ -151,7 +460,16 @@ fn chooseFolders(allocator: std.mem.Allocator, io: std.Io, config_home: []const 
             else
                 "Where should Kata keep converted books? Each EPUB becomes a readable document with the same name here, plus a small index. Use an absolute path.";
             const full = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ description, if (error_note.len > 0) "  ⚠ " else "", error_note });
-            const raw = try tui.prompt(allocator, if (comptime std.mem.eql(u8, field, "ingest")) "Ingest folder (kataIngest)" else "Library folder (kataLibrary)", full, @field(suggestion, field)) orelse return false;
+            const label = if (comptime std.mem.eql(u8, field, "ingest")) "Ingest folder (kataIngest)" else "Library folder (kataLibrary)";
+            var raw = try tui.promptWith(allocator, label, full, if (@field(folders, field).len > 0) @field(folders, field) else @field(suggestion, field), true) orelse return false;
+            if (raw.len > 0 and raw[0] == tui.browse_marker) {
+                const typed = ingest.normalizeFolder(allocator, if (raw.len > 1) raw[1..] else "~/", home) catch home orelse "/";
+                const picked = try browseFolders(allocator, io, label, typed) orelse {
+                    @field(folders, field) = typed;
+                    continue;
+                };
+                raw = picked;
+            }
             @field(folders, field) = ingest.normalizeFolder(allocator, raw, home) catch |err| {
                 error_note = switch (err) {
                     error.FolderMustBeAbsolute => "That path is relative; enter an absolute path.",
@@ -178,14 +496,14 @@ const c = @cImport({
     @cInclude("time.h");
 });
 
-const Session = struct { title: []const u8, rows: []const layout.Row };
+const Session = struct { title: []const u8, rows: []const layout.Row, english_edition: bool = false };
 fn currentDate() !i32 {
     var now = c.time(null);
     const local = c.localtime(&now) orelse return error.ClockUnavailable;
     return (local.*.tm_year + 1900) * 10000 + (local.*.tm_mon + 1) * 100 + local.*.tm_mday;
 }
 
-fn prepare(allocator: std.mem.Allocator, io: std.Io, entry: catalog.Entry, state: *storage.State, date: i32, passage: ?[]const u8) !Session {
+fn prepare(allocator: std.mem.Allocator, io: std.Io, entry: catalog.Entry, state: *storage.State, date: i32, passage: ?[]const u8, english: ?[]const source.Verse) !Session {
     var references: std.ArrayList(source.Reference) = .empty;
     var title: []const u8 = undefined;
     var scope: u64 = undefined;
@@ -212,12 +530,18 @@ fn prepare(allocator: std.mem.Allocator, io: std.Io, entry: catalog.Entry, state
         state.scope_hash = scope;
     }
     var rows: std.ArrayList(layout.Row) = .empty;
+    var used_edition = false;
     for (references.items) |reference| {
-        const streams = try source.streams(allocator, io, reference);
+        var streams = try source.streams(allocator, io, reference);
+        // The Psalter covers only the Psalms; elsewhere column 1 stays KJV.
+        if (english) |edition| if (state.edition[0] == 1 and std.mem.eql(u8, reference.book, "Psalms")) {
+            streams[0] = try editionVerses(allocator, edition, reference);
+            used_edition = true;
+        };
         try rows.appendSlice(allocator, try layout.alignVerses(allocator, streams));
     }
     if (rows.items.len == 0) return error.NoVerses;
-    return .{ .title = title, .rows = rows.items };
+    return .{ .title = title, .rows = rows.items, .english_edition = used_edition };
 }
 
 pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base: []const u8, explicit_plan: ?[]const u8, initial_passage: ?[]const u8) !void {
@@ -258,6 +582,13 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     var override = initial_passage;
     var finder: search.State = .{};
     defer finder.deinit();
+    var build_for: ?[]const u8 = null;
+    // Column editions are one app-wide choice (not per reading location).
+    const editions_path = try std.fmt.allocPrint(allocator, "{s}.editions", .{base});
+    var editions: [3]u8 = .{ 0, 0, 0 };
+    if (std.Io.Dir.cwd().readFileAlloc(init.io, editions_path, allocator, .limited(16))) |bytes| {
+        for (bytes[0..@min(3, bytes.len)], 0..) |b, i| editions[i] = if (b == '1') 1 else 0;
+    } else |_| {}
     var shelf: Shelf = .{};
     const home = init.environ_map.get("HOME") orelse init.environ_map.get("USERPROFILE");
     const folders_saved = ingest.loadFolders(allocator, init.io, config_home) catch |err| blk: {
@@ -302,9 +633,50 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             },
             .book => |index| {
                 active = null;
-                const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps, null);
+                // Book menu: read, or a reading plan that includes this book.
+                var choices: std.ArrayList([]const u8) = .empty;
+                var plan_rows: std.ArrayList(usize) = .empty;
+                try choices.append(allocator, "Read · resume where you left off");
+                for (plans.entries.items, 0..) |plan_entry, p| for (plan_entry.plan.parsed.value.streams) |stream| {
+                    if (stream.library) |file| if (std.mem.eql(u8, file, shelf.entries[index].file)) {
+                        try choices.append(allocator, try std.fmt.allocPrint(allocator, "Reading plan · {s} · {d} days", .{ plan_entry.plan.name(), plan_entry.plan.totalDays() }));
+                        try plan_rows.append(allocator, p);
+                        break;
+                    };
+                };
+                try choices.append(allocator, "＋ Build a reading plan for this book");
+                const pick = try tui.choose(allocator, shelf.entries[index].title, "Read freely, follow a reading plan, or build one.", choices.items, 0, 1) orelse continue;
+                if (pick == choices.items.len - 1) {
+                    build_for = shelf.entries[index].file;
+                    active = .build_plan;
+                    continue;
+                }
+                if (pick > 0) {
+                    active = .{ .plan = plan_rows.items[pick - 1] };
+                    continue;
+                }
+                const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps);
                 if (result.exit == .quit) return;
                 notice = result.notice orelse "Library";
+                continue;
+            },
+            .build_plan => {
+                active = null;
+                const options = try libraryOptions(allocator, init.io, &shelf);
+                const saved = plan_builder.run(allocator, init.io, user_plans, options, build_for) catch |err| {
+                    notice = try std.fmt.allocPrint(allocator, "Plan builder failed: {s}.", .{@errorName(err)});
+                    continue;
+                } orelse {
+                    notice = "Plan builder closed without saving.";
+                    continue;
+                };
+                const index = plans.addFile(init.io, saved) catch |err| {
+                    notice = try std.fmt.allocPrint(allocator, "Saved {s} but cannot load it: {s}.", .{ saved, @errorName(err) });
+                    continue;
+                };
+                active = .{ .plan = index };
+                build_for = null;
+                notice = try std.fmt.allocPrint(allocator, "Plan saved to {s} and selected.", .{saved});
                 continue;
             },
             .search_books => {
@@ -316,6 +688,16 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             },
         }
         const entry = plans.entries.items[selected];
+        if (free == null and hasLibrary(entry)) {
+            active = null;
+            const exit = planHub(allocator, init.io, &shelf, entry, base, &base_hash, graphics_caps, &finder) catch |err| {
+                notice = try std.fmt.allocPrint(allocator, "Cannot open plan: {s}.", .{@errorName(err)});
+                continue;
+            };
+            if (exit == .quit) return;
+            notice = "Library";
+            continue;
+        }
         var session_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer session_arena.deinit();
         const work = session_arena.allocator();
@@ -329,7 +711,9 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         if (free == null and state.plan_hash != 0 and state.plan_hash != entry.hash) return error.PlanChangedUseSeparateState;
         if (free != null and (state.plan_hash != 0 or state.next_day != 0 or state.completed_on != 0)) return error.InvalidFreeState;
         const date = try currentDate();
-        var session = prepare(work, init.io, entry, &state, date, query) catch |err| {
+        const psalter = psalterVerses(init.io, &shelf);
+        state.edition = if (psalter == null) .{ 0, 0, 0 } else editions;
+        var session = prepare(work, init.io, entry, &state, date, query, psalter) catch |err| {
             notice = try std.fmt.allocPrint(allocator, "Cannot load reading: {s}. Progress was not changed.", .{@errorName(err)});
             active = null;
             continue;
@@ -341,6 +725,9 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             last_free.verse = null;
             active = .{ .free = last_free };
         }
+        const names: [3][]const u8 = .{ if (session.english_edition) shelf.psalter_name else "kjv", "grb", "vul" };
+        finder.names = names;
+        finder.editions = .{ if (session.english_edition) psalter else null, null, null };
         const action = try tui.runInTerminal(work, session.rows, &state, .{
             .title = session.title,
             .plan_mode = free == null,
@@ -352,7 +739,16 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             .plan = &plans.entries.items[selected].plan,
             .notice = notice,
             .search = &finder,
+            .editions = .{ if (psalter != null and session.rows.len > 0 and std.mem.eql(u8, session.rows[0].book, "Psalms")) 2 else 1, 1, 1 },
+            .names = names,
         });
+        if (!std.mem.eql(u8, &state.edition, &editions)) {
+            editions = state.edition;
+            var text: [3]u8 = undefined;
+            for (editions, 0..) |e, i| text[i] = '0' + e;
+            std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = editions_path, .data = &text }) catch {};
+        }
+        state.edition = .{ 0, 0, 0 };
         try storage.save(allocator, init.io, path, state);
         if (free != null) try reading.saveBookmark(allocator, init.io, base, last_free) else {
             try catalog.saveSelected(allocator, init.io, base, entry.id);
@@ -384,16 +780,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             },
             .choose_plan => |index| target = .{ .plan = index },
             .open_location => |at| target = .{ .free = at },
-            .open_psalter => |psalm| {
-                const index = psalterIndex(&shelf) orelse {
-                    notice = "No ingested Psalter found. Put a Psalter EPUB in the ingest folder; P then opens it at the current psalm.";
-                    continue;
-                };
-                const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps, psalm);
-                if (result.exit == .quit) return;
-                notice = result.notice orelse "Back from the Psalter.";
-                continue;
-            },
+            .reload => continue,
             .start_day => |day| {
                 if (free != null) continue;
                 changed_day = day;
@@ -408,9 +795,13 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         switch (target) {
             .plan => |index| target_plan = index,
             .free => |at| target_free = at,
-            .book, .folders, .search_books => unreachable, // only chosen from the Library menu
+            .book, .folders, .search_books, .build_plan => unreachable, // only chosen from the Library menu
         }
         const target_entry = plans.entries.items[target_plan];
+        if (target_free == null and changed_day == null and hasLibrary(target_entry)) {
+            active = target;
+            continue;
+        }
         const target_path = if (target_free) |at| try reading.path(temporary, base, at, null) else try catalog.progressPath(temporary, base, base_hash, target_entry.hash);
         var changed = storage.load(temporary, init.io, target_path) catch |err| {
             notice = try std.fmt.allocPrint(allocator, "Cannot open requested progress: {s}. Previous view retained.", .{@errorName(err)});
@@ -431,7 +822,8 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             };
         }
         const target_query: ?[]const u8 = if (target_free) |at| try library.reference(temporary, at) else null;
-        const validated = prepare(temporary, init.io, target_entry, &changed, date, target_query) catch |err| {
+        changed.edition = editions;
+        const validated = prepare(temporary, init.io, target_entry, &changed, date, target_query, psalterVerses(init.io, &shelf)) catch |err| {
             notice = try std.fmt.allocPrint(allocator, "Cannot load requested reading: {s}. Previous view retained.", .{@errorName(err)});
             continue;
         };
@@ -440,6 +832,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             finder.reveal = false;
             continue;
         };
+        changed.edition = .{ 0, 0, 0 };
         try storage.save(allocator, init.io, target_path, changed);
         if (target_free) |at| try reading.saveBookmark(allocator, init.io, base, at) else {
             try catalog.saveSelected(allocator, init.io, base, target_entry.id);

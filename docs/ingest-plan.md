@@ -43,10 +43,16 @@ Known gaps / next ideas:
   3-element state.json, map Psalter blocks (heading "Psalm N" + verse
   numbers, superscription → verse 0?) from the ingested KATA-DOC into
   source.Verse streams at load time.
-  Interim (DONE 2026-10-10): `P` in the Bible reader on a psalm opens the
-  ingested Psalter (first library title containing "psalter") at the same
-  Greek/Latin psalm (`book_reader.psalmPosition` matches "Psalm <roman>. N");
-  `m` returns to the Bible reading.
+  SUPERSEDED (2026-10-10) by edition cycling: no 4th pane. `e` in the
+  Bible reader switches column 1 between KJV and the ingested Psalter
+  ("htm"; first library title containing "psalter") in the Psalms. Psalter
+  verses sit under Greek/Latin psalm rows by printed verse number (same
+  rule as KJV); superscriptions are omitted. Verse division differs from
+  the Greek in ~109 of 151 psalms (counts differ by up to ±6), so verses
+  drift within many psalms; a per-psalm verse map would fix it. Choice is
+  app-wide in `<state>.editions` ("010"-style); search follows the active
+  edition (search.findIn). Outside the Psalms column 1 stays KJV. User is
+  evaluating — may be reverted.
 - Repeated running header/footer stripping not implemented (no sample needs
   it; PDF-converted EPUBs would).
 - DONE 2026-10-10: tables render as aligned columns (water-filled widths,
@@ -59,8 +65,12 @@ Known gaps / next ideas:
   deferred until a real book needs them. Same for header/footer stripping.
 - DONE 2026-10-10: Library → "Search all books" searches every converted
   book (same matcher), results menu (first 2000), Enter opens the book at
-  the passage, `m` returns to the results. Test: tests/library-pty.py.
-- Folder prompt has no file browser; paths are typed (paste works).
+  the passage, `m` returns to the results. Parsed books are cached in memory
+  per session (Shelf.docs), reset when the index reloads. Test:
+  tests/library-pty.py.
+- DONE 2026-10-10: folder prompt Tab opens a folder browser (starts at the
+  typed path's nearest existing folder; ✓ use, ↑ parent, + new folder,
+  hidden-folder toggle). Test: tests/folder-browser-pty.py.
 
 ## Inline images — stage 4 DONE (Sixel), 2026-10-09
 
@@ -233,3 +243,24 @@ Building Microservices (EPUB 2 / OPF 1.0, 29 spine items, `.html`, toc.ncx only)
   README cleanup, mise.toml, examplePubs/ are all pending in the work tree.
   Ask the user whether to commit before starting / whether examplePubs and
   kataLibrary output belong in .gitignore.
+
+## Reading plans for library books (2026-10-10, DONE)
+
+- `src/reading_units.zig`: body chapters (front/back matter excluded by
+  title list + tiny/untitled pages), units = chapters or sections.
+  Psalter (10+ "Kathisma" chapters): kathisma / stasis (cut after each
+  "Glory…" rubric; 60 stases). Books with section headings: split at the
+  chapter's top heading level, small (<1500 chars) sections merged.
+  Otherwise quarter chapters (chapters ≥ 8000 chars). Unit test over BMS,
+  Secret Life, Think Like a Programmer, Psalter.
+- Plan format: `Stream.library` (library file) + `Stream.unit`
+  ("chapter"|"section"); its single Book = title + unit count;
+  `Chapter.stream` added to assignments. Old plans unchanged.
+- app.zig `planHub`: daily list for plans with library streams (Bible
+  items open in the Bible reader, book portions via book_reader.Portion
+  end marker), complete day, choose day; same progress state files.
+- Library book entries open a menu: Read / its plans / build one.
+- Limits: unit lists are recomputed from the document (not stored), so
+  re-ingesting a book with a newer converter can shift unit numbering;
+  CLI `--check-plan` prints library units as "Title:N".
+- Tests: tests/book-plan-pty.py.

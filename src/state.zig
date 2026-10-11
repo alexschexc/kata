@@ -11,6 +11,9 @@ pub const State = struct {
     enabled: [3]bool = .{ true, true, true },
     linked: bool = true,
     focus: usize = 0,
+    /// Per-column edition: 0 = bundled source, 1 = ingested alternative
+    /// (column 1: the Psalter, Psalms only). Missing in old files → 0.
+    edition: [3]u8 = .{ 0, 0, 0 },
 
     pub fn assignment(self: State, today: i32) usize {
         return if (self.completed_on >= today and self.next_day > 0) self.next_day - 1 else self.next_day;
@@ -40,6 +43,7 @@ pub const State = struct {
         if (self.version != 1 or self.focus >= 3) return error.InvalidState;
         if (!self.enabled[0] and !self.enabled[1] and !self.enabled[2]) return error.InvalidState;
         if (self.completed_on < 0) return error.InvalidState;
+        for (self.edition) |e| if (e > 1) return error.InvalidState;
     }
 };
 

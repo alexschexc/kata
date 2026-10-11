@@ -1,13 +1,18 @@
 const std = @import("std");
 
-pub const Chapter = struct { book: []const u8, chapter: u16 };
+/// `stream` indexes Config.streams; for library streams `chapter` is the
+/// 1-based reading unit (see reading_units.zig), not a Bible chapter.
+pub const Chapter = struct { book: []const u8, chapter: u16, stream: usize = 0 };
 pub const Config = struct {
     name: []const u8,
     repeat: bool,
     streams: []const Stream,
     phases: []const Phase,
     pub const Book = struct { name: []const u8, chapters: u16 };
-    pub const Stream = struct { books: []const Book };
+    /// A library stream reads one ingested book (`library` = its file in the
+    /// library folder) in `unit`s ("chapter" or "section"); its single Book
+    /// holds a display name and the unit count.
+    pub const Stream = struct { books: []const Book, library: ?[]const u8 = null, unit: ?[]const u8 = null };
     pub const Phase = struct { days: u16, rates: []const u16 };
 };
 pub const Plan = struct {
@@ -47,7 +52,7 @@ pub const Plan = struct {
                 }
                 const count = @min(rate, book.chapters - offset);
                 for (0..count) |i| {
-                    try result.append(allocator, .{ .book = book.name, .chapter = @intCast(offset + i + 1) });
+                    try result.append(allocator, .{ .book = book.name, .chapter = @intCast(offset + i + 1), .stream = index });
                 }
                 rate -= count;
                 offset = 0;
@@ -82,14 +87,19 @@ fn validate(config: Config) !void {
     }
     for (config.streams, 0..) |stream, index| {
         if (stream.books.len == 0) return error.InvalidPlan;
+        if (stream.library) |file| {
+            if (stream.books.len != 1 or file.len == 0 or std.mem.indexOfAny(u8, file, "/\\") != null) return error.InvalidPlan;
+            const unit = stream.unit orelse return error.InvalidPlan;
+            if (!std.mem.eql(u8, unit, "chapter") and !std.mem.eql(u8, unit, "section")) return error.InvalidPlan;
+        }
         var chapters: usize = 0;
         for (stream.books) |book| {
             if (book.chapters == 0 or std.mem.trim(u8, book.name, " ").len == 0) return error.InvalidPlan;
             // Only plain English letters, digits, and spaces are safe identifiers.
             // Canonical Bible-name mapping belongs to the source adapter.
-            for (book.name) |character| {
+            if (stream.library == null) for (book.name) |character| {
                 if (!std.ascii.isAlphanumeric(character) and character != ' ') return error.InvalidPlan;
-            }
+            };
             chapters = std.math.add(usize, chapters, book.chapters) catch return error.InvalidPlan;
         }
         var assigned: usize = 0;
@@ -351,4 +361,20 @@ fn invalidAllocationScenario(allocator: std.mem.Allocator) !void {
 test "allocation failures release valid and rejected parsing and assignment allocations" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationScenario, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, invalidAllocationScenario, .{});
+}
+
+test "library streams carry their file and unit and number units per stream" {
+    const bytes =
+        \\{"name":"Mixed","repeat":false,"streams":[{"books":[{"name":"John","chapters":2}]},{"books":[{"name":"Building Microservices","chapters":4}],"library":"buildingmicroservices2ndedition","unit":"section"}],"phases":[{"days":2,"rates":[1,2]}]}
+    ;
+    var plan = try Plan.init(std.testing.allocator, bytes);
+    defer plan.deinit();
+    const day = try plan.assignments(std.testing.allocator, 1);
+    defer std.testing.allocator.free(day);
+    try std.testing.expectEqual(@as(usize, 3), day.len);
+    try std.testing.expectEqual(@as(usize, 1), day[1].stream);
+    try std.testing.expectEqual(@as(u16, 3), day[1].chapter);
+    try std.testing.expectEqualStrings("buildingmicroservices2ndedition", plan.parsed.value.streams[day[1].stream].library.?);
+    const bad = "{\"name\":\"Bad\",\"repeat\":false,\"streams\":[{\"books\":[{\"name\":\"X\",\"chapters\":1}],\"library\":\"x\",\"unit\":\"page\"}],\"phases\":[{\"days\":1,\"rates\":[1]}]}";
+    try std.testing.expectError(error.InvalidPlan, Plan.init(std.testing.allocator, bad));
 }

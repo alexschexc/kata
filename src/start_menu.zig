@@ -4,7 +4,7 @@ const source = @import("source.zig");
 const catalog = @import("catalog.zig");
 const tui = @import("tui.zig");
 
-pub const Choice = union(enum) { plan: usize, free: library.Location, book: usize, folders, search_books };
+pub const Choice = union(enum) { plan: usize, free: library.Location, book: usize, folders, search_books, build_plan };
 
 /// Ingested documents offered in the Library after the built-in titles.
 pub const Book = struct { title: []const u8, author: []const u8 = "", chapters: u32 = 0 };
@@ -156,7 +156,10 @@ pub fn run(plans: []const catalog.Entry, selected_plan: usize, io: std.Io, last_
             } else {
                 var choices: std.ArrayList([]const u8) = .empty;
                 for (plans, 0..) |entry, i| try choices.append(allocator, try std.fmt.allocPrint(allocator, "{s} · {d} days{s}", .{ entry.plan.name(), entry.plan.totalDays(), if (i == selected_plan) " · selected" else "" }));
-                if (try tui.choose(allocator, "Choose plan", title.name, choices.items, selected_plan, 1)) |index| return .{ .plan = index };
+                try choices.append(allocator, "＋ Build a new plan · choose books, length, and parallel streams");
+                if (try tui.choose(allocator, "Choose plan", title.name, choices.items, selected_plan, 1)) |index| {
+                    return if (index == plans.len) .build_plan else .{ .plan = index };
+                }
             }
         }
     }

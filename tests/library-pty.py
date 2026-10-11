@@ -38,12 +38,16 @@ with tempfile.TemporaryDirectory(prefix='kata-library-') as folder:
     send(b'3\r', 'The First Kathisma')
     send(b'm', 'Search results')
     send(b'q', 'Bible ·')
-    # Bible Psalm 3 → P opens the Psalter at "Psalm III. 3"; m returns.
+    # Bible Psalm 3: e switches column 1 to the ingested Psalter (htm),
+    # search then follows it; the choice holds on the next psalm; e returns.
     send(b'1\r', 'Reading mode'); send(b'1\r', 'Choose book')
     send(b'19\r', 'Choose chapter'); send(b'3\r', 'starting verse'); send(b'0\r', 'Psalms:3')
-    frame = send(b'P', 'Psalm III. 3')
-    assert 'Abessalom'.encode() in frame
-    send(b'm', 'Back from the Psalter')
+    frame = send(b'e', 'htm · Psalms 3')
+    assert b'O Lord, why are they multiplied' in frame
+    send(b'/salvation\r', 'verses contain')
+    send(b'x', 'e edition')
+    send(b'L', 'htm · Psalms 4')
+    send(b'e', 'kjv · Psalms 4')
     send(b'q', '')
     os.waitpid(pid, 0)
-print('PASS library search across books, results reopen; P opens the Psalter at the current psalm')
+print('PASS library search across books, results reopen; e switches column 1 to the Psalter and back')

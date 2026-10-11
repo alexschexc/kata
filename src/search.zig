@@ -221,6 +221,22 @@ pub fn find(allocator: std.mem.Allocator, pane: usize, query: *const Query) !Res
     return .{ .hits = try hits.toOwnedSlice(allocator), .occurrences = occurrences };
 }
 
+/// Search over an edition's verses (all in catalog books).
+pub fn findIn(allocator: std.mem.Allocator, verses: []const source.Verse, query: *const Query) !Results {
+    var hits: std.ArrayList(Hit) = .empty;
+    var occurrences: usize = 0;
+    for (verses) |verse| {
+        const first = next(verse.text, query, 0) orelse continue;
+        const section = for (source.catalog, 0..) |entry, i| {
+            if (std.mem.eql(u8, entry.name, verse.book)) break i;
+        } else continue;
+        const matches: u32 = @intCast(count(verse.text, query));
+        occurrences += matches;
+        try hits.append(allocator, .{ .section = section, .chapter = verse.chapter, .number = verse.number, .label = verse.label orelse .{ .chapter = verse.chapter, .number = verse.number }, .text = verse.text, .match = first, .occurrences = matches });
+    }
+    return .{ .hits = try hits.toOwnedSlice(allocator), .occurrences = occurrences };
+}
+
 /// Interactive search state, kept by the application across reader sessions
 /// so the results panel stays open when a result opens another chapter.
 pub const State = struct {
@@ -245,6 +261,11 @@ pub const State = struct {
     /// Results panel visible / receiving keys.
     open: bool = false,
     focus: bool = false,
+    /// Column names shown in the panel and notices (edition-aware).
+    names: [3][]const u8 = .{ "kjv", "grb", "vul" },
+    /// When set, a column's active edition replaces its bundled source in
+    /// search (Psalms only for the ingested Psalter).
+    editions: [3]?[]const source.Verse = .{ null, null, null },
     /// Set when a result opened another reading; the next reader view shows
     /// and focuses the searched source.
     reveal: bool = false,
@@ -324,7 +345,7 @@ pub const State = struct {
         self.prompt = false;
         if (self.typing.empty()) return;
         _ = self.arena.reset(.retain_capacity);
-        const results = try find(self.arena.allocator(), self.prompt_pane, &self.typing);
+        const results = if (self.editions[self.prompt_pane]) |verses| try findIn(self.arena.allocator(), verses, &self.typing) else try find(self.arena.allocator(), self.prompt_pane, &self.typing);
         self.pane = self.prompt_pane;
         self.active = self.typing;
         @memcpy(self.submitted[0..self.text_len], self.promptText());

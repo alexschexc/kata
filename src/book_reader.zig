@@ -21,6 +21,10 @@ const gutter_width = 6;
 /// Saved position for one document (`<state>.books/<file>.json`).
 pub const Position = struct { version: u8 = 1, chapter: usize = 0, block: usize = 0 };
 
+/// A plan portion being read: an end-of-reading marker is drawn before
+/// block `end` of chapter `chapter` (end == blocks.len: after the chapter).
+pub const Portion = struct { chapter: usize, end: usize, label: []const u8 };
+
 /// One rendered line: text is a slice of `full` (the block's display text),
 /// so search highlights work across wrapped lines.
 const Line = struct {
@@ -74,16 +78,17 @@ fn wrapCode(allocator: std.mem.Allocator, text: []const u8, width: usize, out: *
 
 /// Lays out one chapter at `width` columns (text column excludes the gutter).
 fn render(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize) ![]Line {
-    return renderWith(allocator, chapter, width, null, 0);
+    return renderWith(allocator, chapter, width, null, 0, null);
 }
 
 /// `images` (when inline images are enabled) reserves rows for each image
 /// block instead of the placeholder line; `max_rows` caps image height.
-fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize, images: ?*inline_image.Renderer, max_rows: usize) ![]Line {
+fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize, images: ?*inline_image.Renderer, max_rows: usize, stop: ?usize) ![]Line {
     var lines: std.ArrayList(Line) = .empty;
     var page: []const u8 = "";
     const stacked = try stackedLines(allocator, chapter.blocks);
     for (chapter.blocks, 0..) |block, index| {
+        if (stop != null and stop.? == index) try appendStop(allocator, &lines, index);
         if (block.page.len > 0 and !std.mem.eql(u8, block.page, page)) {
             if (index > 0) {
                 const label = try std.fmt.allocPrint(allocator, "── page {s} ──", .{block.page});
@@ -128,7 +133,16 @@ fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: us
             try lines.append(allocator, .{ .block = index, .text = piece, .full = text, .gutter = if (i == 0) gutter else "", .style = styleFor(block.kind) });
         }
     }
+    if (stop != null and stop.? >= chapter.blocks.len) try appendStop(allocator, &lines, chapter.blocks.len -| 1);
     return lines.toOwnedSlice(allocator);
+}
+
+const stop_text = "━━━━━━ end of today's reading · m returns to the plan ━━━━━━";
+
+fn appendStop(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), block: usize) !void {
+    try lines.append(allocator, .{ .block = block, .text = "", .full = "" });
+    try lines.append(allocator, .{ .block = block, .text = stop_text, .full = stop_text, .style = .heading });
+    try lines.append(allocator, .{ .block = block, .text = "", .full = "" });
 }
 
 const cell_separator = " │ ";
@@ -261,18 +275,13 @@ pub fn find(allocator: std.mem.Allocator, doc: document.Document, query: *const 
     return .{ .hits = try hits.toOwnedSlice(allocator), .occurrences = occurrences };
 }
 
-/// Position of psalm `number` (Greek/Latin numbering) in a Psalter whose
-/// psalm headings read "Psalm <roman>. <number>" (or "Psalm <number>").
-pub fn psalmPosition(doc: document.Document, number: u16) ?Position {
-    for (doc.chapters, 0..) |chapter, c| for (chapter.blocks, 0..) |block, b| {
-        if (block.kind != .heading or !std.mem.startsWith(u8, block.text, "Psalm ")) continue;
-        var words = std.mem.tokenizeAny(u8, block.text, " .");
-        var last: []const u8 = "";
-        while (words.next()) |word| last = word;
-        const value = std.fmt.parseInt(u16, last, 10) catch continue;
-        if (value == number) return .{ .chapter = c, .block = b };
-    };
-    return null;
+/// Arabic psalm number from a heading "Psalm <roman>. <N>" (or "Psalm N").
+pub fn psalmNumber(text: []const u8) ?u16 {
+    if (!std.mem.startsWith(u8, text, "Psalm ")) return null;
+    var words = std.mem.tokenizeAny(u8, text, " .");
+    var last: []const u8 = "";
+    while (words.next()) |word| last = word;
+    return std.fmt.parseInt(u16, last, 10) catch null;
 }
 
 fn statePath(allocator: std.mem.Allocator, base: []const u8, file: []const u8) ![]const u8 {
@@ -333,7 +342,7 @@ fn openImage(io: std.Io, path: []const u8) !void {
     _ = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .pgid = if (@import("builtin").os.tag == .windows) null else 0 });
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities, start: ?Position) !Exit {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities, start: ?Position, portion: ?Portion) !Exit {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -349,7 +358,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
     defer wrapping.deinit();
     var laid_width: usize = 0;
     var laid_chapter: usize = std.math.maxInt(usize);
-    var notice: []const u8 = "/ search · t chapters · H/L (Shift+←/→) chapters · m library · q quit";
+    var notice: []const u8 = if (portion) |p| try std.fmt.allocPrint(allocator, "Plan reading: {s} · read to the end-of-reading marker; m returns to the plan", .{p.label}) else "/ search · t chapters · H/L (Shift+←/→) chapters · m library · q quit";
     var redraw = true;
     var old: tui.Size = .{ .columns = 0, .rows = 0 };
     defer tui.setTextInput(false);
@@ -390,7 +399,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
         if (usable and reader_visible and (text_width != laid_width or chapter != laid_chapter or (images.enabled() and image_rows != laid_height))) {
             const keep = anchor_block orelse if (lines.len > 0) lines[@min(top, lines.len - 1)].block else 0;
             _ = wrapping.reset(.retain_capacity);
-            lines = try renderWith(wrapping.allocator(), doc.chapters[chapter], text_width, if (images.enabled()) &images else null, image_rows);
+            lines = try renderWith(wrapping.allocator(), doc.chapters[chapter], text_width, if (images.enabled()) &images else null, image_rows, if (portion != null and portion.?.chapter == chapter) portion.?.end else null);
             laid_width = text_width;
             laid_height = image_rows;
             laid_chapter = chapter;
@@ -758,19 +767,10 @@ test "table rows render as aligned columns that wrap within the width" {
     for (wrapped) |line| if (line.style != .page) try std.testing.expectEqual(bar, std.mem.indexOf(u8, line.text, "│").?);
 }
 
-test "psalm headings are located by their arabic number" {
-    const doc: document.Document = .{ .title = "Psalter", .chapters = &.{
-        .{ .title = "Foreword", .blocks = &.{.{ .kind = .heading, .text = "Foreword" }} },
-        .{ .title = "The First Kathisma", .blocks = &.{
-            .{ .kind = .heading, .level = 1, .text = "The First Kathisma" },
-            .{ .kind = .heading, .level = 2, .text = "Psalm I. 1" },
-            .{ .kind = .verse, .verse = 1, .text = "Blessed is the man" },
-            .{ .kind = .heading, .level = 2, .text = "Psalm CXVIII. 118" },
-        } },
-    } };
-    try std.testing.expectEqual(Position{ .chapter = 1, .block = 1 }, psalmPosition(doc, 1).?);
-    try std.testing.expectEqual(Position{ .chapter = 1, .block = 3 }, psalmPosition(doc, 118).?);
-    try std.testing.expect(psalmPosition(doc, 151) == null);
+test "psalm headings give their arabic number" {
+    try std.testing.expectEqual(@as(?u16, 3), psalmNumber("Psalm III. 3"));
+    try std.testing.expectEqual(@as(?u16, 118), psalmNumber("Psalm CXVIII. 118"));
+    try std.testing.expect(psalmNumber("Foreword") == null);
 }
 
 test "runs of short paragraphs stack without spacer lines" {

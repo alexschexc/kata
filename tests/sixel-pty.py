@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='kata-sixel-') as folder:
     p, m, s, data, pump, send = session(tmp, b'\x1b[6;20;10t\x1b[?62;4;22c')
     try:
         pump(4)
-        send(b'2\r', 'Building Microservices')
+        send(b'2\r', 'Read · resume'); send(b'1\r', 'Building Microservices')
         send(b'/figure 4-9\r', 'passages contain')
         frame, _ = send(b'\r', 'Figure 4-9.')
         images = SIXEL.findall(frame)
@@ -116,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix='kata-sixel-') as folder:
         p, m, s, data, pump, send = session(tmp, b'\x1b[6;20;10t\x1b[?62;4;22c')
         try:
             pump(8)
-            send(b'3\r', 'Secret Life of Programs')
+            send(b'3\r', 'Read · resume'); send(b'1\r', 'Secret Life of Programs')
             send(b'/truth tables for boolean\r', 'passages contain')
             frame, _ = send(b'\r', 'Truth tables')
             assert SIXEL.findall(frame), 'baseline JPEG figure drawn as sixel'
@@ -128,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix='kata-sixel-') as folder:
     p, m, s, data, pump, send = session(tmp, b'\x1b_Gi=31;OK\x1b\\\x1b[6;20;10t\x1b[?62;22c')
     try:
         pump(4)
-        send(b'2\r', 'Building Microservices')
+        send(b'2\r', 'Read · resume'); send(b'1\r', 'Building Microservices')
         send(b'/figure 4-9\r', 'passages contain')
         _, at = send(b'\r', 'Figure 4-9.')
         frame = bytes(data[at:])
@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='kata-sixel-') as folder:
     p, m, s, data, pump, send = session(tmp, b'\x1b[?62;22c')
     try:
         pump(3)
-        send(b'2\r', 'Building Microservices')
+        send(b'2\r', 'Read · resume'); send(b'1\r', 'Building Microservices')
         send(b'/figure 4-9\r', 'passages contain')
         frame, _ = send(b'\r', 'Figure 4-9.')
         assert b'\x1bP' not in bytes(data), 'no sixel for a terminal without support'

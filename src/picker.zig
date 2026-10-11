@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Action = union(enum) { choose_plan: usize, start_day: usize, home, open_place, next_chapter, previous_chapter, open_location: @import("library.zig").Location, open_psalter: u16 };
+pub const Action = union(enum) { choose_plan: usize, start_day: usize, home, open_place, next_chapter, previous_chapter, open_location: @import("library.zig").Location, reload };
 pub const Kind = enum { closed, plans, days, confirm_day };
 pub const Picker = struct {
     kind: Kind = .closed,

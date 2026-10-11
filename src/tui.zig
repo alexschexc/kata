@@ -89,6 +89,9 @@ pub const Options = struct {
     notice: []const u8 = "Verse-label alignment; numbering variants are not yet mapped.",
     /// Owned by the application so results survive opening another chapter.
     search: ?*search.State = null,
+    /// Editions available per column (1 = bundled only) and display names.
+    editions: [3]u8 = .{ 1, 1, 1 },
+    names: [3][]const u8 = .{ "kjv", "grb", "vul" },
 };
 
 fn completeDay(state: *storage.State, today: i32) !bool {
@@ -225,6 +228,15 @@ pub fn status(text: []const u8) !void {
 /// Single-line text prompt inside the application terminal. Returns the
 /// entered text (owned by `allocator`), or null when cancelled with Esc.
 pub fn prompt(allocator: std.mem.Allocator, title: []const u8, description: []const u8, initial: []const u8) !?[]const u8 {
+    return promptWith(allocator, title, description, initial, false);
+}
+
+/// Tab in a path prompt: returned text starts with this byte, followed by
+/// the text typed so far (the caller opens a folder browser there).
+pub const browse_marker = '\t';
+
+/// As `prompt`; with `browsable`, Tab returns `browse_marker` ++ text.
+pub fn promptWith(allocator: std.mem.Allocator, title: []const u8, description: []const u8, initial: []const u8, browsable: bool) !?[]const u8 {
     var buffer: [1024]u8 = undefined;
     var len: usize = @min(initial.len, buffer.len);
     @memcpy(buffer[0..len], initial[0..len]);
@@ -264,7 +276,7 @@ pub fn prompt(allocator: std.mem.Allocator, title: []const u8, description: []co
                 try w.writeAll(shown);
                 try w.writeAll("█");
                 try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{size.rows - 1});
-                try w.writeAll(clipped("Type or paste · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels", size.columns));
+                try w.writeAll(clipped(if (browsable) "Type or paste · Tab browses folders · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels" else "Type or paste · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels", size.columns));
                 if (invalid) {
                     try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{size.rows});
                     try w.writeAll(clipped("Enter some text first (it must be valid UTF-8).", size.columns));
@@ -292,6 +304,12 @@ pub fn prompt(allocator: std.mem.Allocator, title: []const u8, description: []co
                 while (len > 0 and (buffer[len] & 0xC0) == 0x80) len -= 1;
             },
             21 => len = 0,
+            9 => if (browsable) {
+                const out = try allocator.alloc(u8, len + 1);
+                out[0] = browse_marker;
+                @memcpy(out[1..], buffer[0..len]);
+                return out;
+            },
             else => if (key >= 0x20 and key != 0x7f and len < buffer.len) {
                 buffer[len] = key;
                 len += 1;
@@ -424,7 +442,7 @@ fn locate(rows: []const layout.Row, hit: search.Hit) ?usize {
 
 fn renderPanel(allocator: std.mem.Allocator, w: *std.Io.Writer, finder: *const search.State, x: usize, width: usize, top: usize, bottom: usize) !void {
     const inner = width -| 3;
-    const tool = @import("source.zig").tools[finder.pane];
+    const tool = finder.names[finder.pane];
     var row = top;
     const header = try std.fmt.allocPrint(allocator, "Search {s} · “{s}”", .{ tool, finder.submittedText() });
     defer allocator.free(header);
@@ -567,7 +585,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                         if (!state.enabled[pane]) continue;
                         const row_index = if (lines.len > 0) lines[@min(tops[pane], lines.len - 1)].row else 0;
                         const row = rows[row_index];
-                        const label = try std.fmt.allocPrint(allocator, "{s}{s} · {s} {d}", .{ if (state.focus == pane) "▶ " else "  ", @import("source.zig").tools[pane], row.book, row.label(pane).chapter });
+                        const label = try std.fmt.allocPrint(allocator, "{s}{s} · {s} {d}", .{ if (state.focus == pane) "▶ " else "  ", options.names[pane], row.book, row.label(pane).chapter });
                         defer allocator.free(label);
                         try w.writeAll(if (state.focus == pane and !panel_focus) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
                         try cell(w, label, pane_width);
@@ -596,12 +614,12 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 else if (panel_open)
                     "j/k scroll · h/l focus · / search · r results · n/N next/previous match · x close search"
                 else
-                    "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search · P Psalter";
+                    "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search · e edition";
                 try w.writeAll(clipped(help, columns));
                 try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
                 if (prompting) {
                     const f = finder.?;
-                    const line = try std.fmt.allocPrint(allocator, "/{s}█   searching {s}", .{ f.promptText(), @import("source.zig").tools[f.prompt_pane] });
+                    const line = try std.fmt.allocPrint(allocator, "/{s}█   searching {s}", .{ f.promptText(), f.names[f.prompt_pane] });
                     defer allocator.free(line);
                     try w.writeAll("\x1b[38;2;224;215;191m");
                     try w.writeAll(clipped(line, columns));
@@ -647,7 +665,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                             notice = try std.fmt.allocPrint(allocator, "Search failed: {s}", .{@errorName(err)});
                         };
                         if (f.open and f.hits.len == 0) {
-                            notice = try std.fmt.allocPrint(allocator, "No matches for “{s}” in {s}.", .{ query, @import("source.zig").tools[f.pane] });
+                            notice = try std.fmt.allocPrint(allocator, "No matches for “{s}” in {s}.", .{ query, f.names[f.pane] });
                             f.close();
                         } else if (f.open) {
                             // Start the list at the first result in this reading, if any.
@@ -655,7 +673,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                                 f.selected = index;
                                 break;
                             };
-                            notice = try std.fmt.allocPrint(allocator, "{d} verses contain “{s}” in {s}. Enter opens a result; n/N steps through them.", .{ f.hits.len, query, @import("source.zig").tools[f.pane] });
+                            notice = try std.fmt.allocPrint(allocator, "{d} verses contain “{s}” in {s}. Enter opens a result; n/N steps through them.", .{ f.hits.len, query, f.names[f.pane] });
                         }
                     },
                     127, 8 => f.backspace(),
@@ -716,13 +734,14 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
         }
         switch (key) {
             'q', 3 => break,
-            'P' => if (lines.len > 0) {
-                const row = rows[lines[@min(tops[state.focus], lines.len - 1)].row];
-                if (std.mem.eql(u8, row.book, "Psalms")) {
+            'e' => {
+                if (options.editions[state.focus] < 2) {
+                    notice = if (state.focus == 0) "No other edition here. With a Psalter ingested, e switches column 1 between KJV and it in the Psalms." else "Only one edition for this column.";
+                } else {
                     remember(lines, tops, state);
-                    return .{ .open_psalter = row.chapter };
+                    state.edition[state.focus] = (state.edition[state.focus] + 1) % options.editions[state.focus];
+                    return .reload;
                 }
-                notice = "P opens the ingested Psalter from a psalm (Greek/Latin numbering).";
             },
             'm', 'o', 'H', 'L' => {
                 if ((key == 'H' or key == 'L') and options.plan_mode) continue;
