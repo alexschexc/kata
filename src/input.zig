@@ -148,7 +148,7 @@ pub const Decoder = struct {
 
 pub fn recognized(byte: u8) bool {
     return switch (byte) {
-        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', 'H', 'L', 'f', 'b', 'g', 'G', 's', 'p', 'd', '/', 'N', 'r', 'x', 't', 'i' => true,
+        3, 4, 8, 9, 10, 13, 21, 27, 127, '0'...'9', 'j', 'k', 'h', 'l', 'n', 'y', 'c', 'q', 'm', 'o', 'H', 'L', 'f', 'b', 'g', 'G', 's', 'p', 'd', '/', 'N', 'r', 'x', 't', 'i', '+', '=', '-', '_', 'P', 'S' => true,
         else => false,
     };
 }

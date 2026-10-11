@@ -17,24 +17,52 @@ pub const Archive = struct {
             if (std.mem.eql(u8, bytes[end..][0..4], "PK\x05\x06")) break;
             if (end == 0 or bytes.len - end > 22 + 65535) return error.NotZip;
         }
-        const count = std.mem.readInt(u16, bytes[end + 10 ..][0..2], .little);
+        var count: usize = std.mem.readInt(u16, bytes[end + 10 ..][0..2], .little);
         var at: usize = std.mem.readInt(u32, bytes[end + 16 ..][0..4], .little);
+        // Zip64: saturated fields point to the zip64 end record via its locator.
+        if (count == 0xFFFF or at == 0xFFFFFFFF) {
+            if (end < 20 or !std.mem.eql(u8, bytes[end - 20 ..][0..4], "PK\x06\x07")) return error.CorruptZip;
+            const record = std.math.cast(usize, std.mem.readInt(u64, bytes[end - 12 ..][0..8], .little)) orelse return error.CorruptZip;
+            if (record + 56 > bytes.len or !std.mem.eql(u8, bytes[record..][0..4], "PK\x06\x06")) return error.CorruptZip;
+            count = std.math.cast(usize, std.mem.readInt(u64, bytes[record + 32 ..][0..8], .little)) orelse return error.CorruptZip;
+            at = std.math.cast(usize, std.mem.readInt(u64, bytes[record + 48 ..][0..8], .little)) orelse return error.CorruptZip;
+        }
+        if (count > bytes.len / 46) return error.CorruptZip;
         const entries = try allocator.alloc(Entry, count);
         errdefer allocator.free(entries);
         for (entries) |*entry| {
             if (at + 46 > bytes.len or !std.mem.eql(u8, bytes[at..][0..4], "PK\x01\x02")) return error.CorruptZip;
             const method = std.mem.readInt(u16, bytes[at + 10 ..][0..2], .little);
-            const csize = std.mem.readInt(u32, bytes[at + 20 ..][0..4], .little);
-            const usize_ = std.mem.readInt(u32, bytes[at + 24 ..][0..4], .little);
+            var csize: u64 = std.mem.readInt(u32, bytes[at + 20 ..][0..4], .little);
+            var usize_: u64 = std.mem.readInt(u32, bytes[at + 24 ..][0..4], .little);
             const name_len = std.mem.readInt(u16, bytes[at + 28 ..][0..2], .little);
             const extra_len = std.mem.readInt(u16, bytes[at + 30 ..][0..2], .little);
             const comment_len = std.mem.readInt(u16, bytes[at + 32 ..][0..2], .little);
-            const local: usize = std.mem.readInt(u32, bytes[at + 42 ..][0..4], .little);
-            if (at + 46 + name_len > bytes.len or local + 30 > bytes.len) return error.CorruptZip;
+            var local: u64 = std.mem.readInt(u32, bytes[at + 42 ..][0..4], .little);
+            if (at + 46 + name_len + extra_len > bytes.len) return error.CorruptZip;
             const name = bytes[at + 46 ..][0..name_len];
-            const data = local + 30 + std.mem.readInt(u16, bytes[local + 26 ..][0..2], .little) + std.mem.readInt(u16, bytes[local + 28 ..][0..2], .little);
+            if (usize_ == 0xFFFFFFFF or csize == 0xFFFFFFFF or local == 0xFFFFFFFF) {
+                // Zip64 extra field (0x0001): only the saturated values, in order.
+                var extra = bytes[at + 46 + name_len ..][0..extra_len];
+                const found = while (extra.len >= 4) {
+                    const id = std.mem.readInt(u16, extra[0..2], .little);
+                    const len = std.mem.readInt(u16, extra[2..4], .little);
+                    if (4 + @as(usize, len) > extra.len) break null;
+                    if (id == 1) break extra[4..][0..len];
+                    extra = extra[4 + len ..];
+                } else null;
+                var values = found orelse return error.CorruptZip;
+                inline for (.{ &usize_, &csize, &local }) |field| if (field.* == 0xFFFFFFFF) {
+                    if (values.len < 8) return error.CorruptZip;
+                    field.* = std.mem.readInt(u64, values[0..8], .little);
+                    values = values[8..];
+                };
+            }
+            if (local > bytes.len -| 30 or csize > bytes.len) return error.CorruptZip;
+            const local_at: usize = @intCast(local);
+            const data = local_at + 30 + std.mem.readInt(u16, bytes[local_at + 26 ..][0..2], .little) + std.mem.readInt(u16, bytes[local_at + 28 ..][0..2], .little);
             if (data + csize > bytes.len) return error.CorruptZip;
-            entry.* = .{ .name = name, .method = method, .compressed = bytes[data..][0..csize], .size = usize_ };
+            entry.* = .{ .name = name, .method = method, .compressed = bytes[data..][0..@intCast(csize)], .size = std.math.cast(usize, usize_) orelse return error.CorruptZip };
             at += 46 + name_len + extra_len + comment_len;
         }
         return .{ .bytes = bytes, .entries = entries };
@@ -270,4 +298,78 @@ test "both sample EPUBs open with metadata, spine, and TOC" {
             try std.testing.expect(std.mem.indexOf(u8, text, "<body") != null);
         }
     }
+}
+
+test "zip64 central directory and extra fields are read" {
+    // One stored member "a.txt" = "hello", written zip64-style: saturated
+    // sizes/offset in the central entry, real values in the 0x0001 extra,
+    // and a saturated end record pointing at the zip64 end record.
+    var buf: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buf.deinit();
+    const w = &buf.writer;
+    const le = std.builtin.Endian.little;
+    try w.writeAll("PK\x03\x04");
+    try w.writeInt(u16, 45, le); // version
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0, le); // stored
+    try w.writeInt(u32, 0, le); // time/date
+    try w.writeInt(u32, 0x3610a686, le); // crc (unchecked)
+    try w.writeInt(u32, 5, le);
+    try w.writeInt(u32, 5, le);
+    try w.writeInt(u16, 5, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeAll("a.txthello");
+    const central = buf.written().len;
+    try w.writeAll("PK\x01\x02");
+    try w.writeInt(u16, 45, le);
+    try w.writeInt(u16, 45, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u32, 0, le);
+    try w.writeInt(u32, 0x3610a686, le);
+    try w.writeInt(u32, 0xFFFFFFFF, le);
+    try w.writeInt(u32, 0xFFFFFFFF, le);
+    try w.writeInt(u16, 5, le);
+    try w.writeInt(u16, 4 + 24, le); // extra
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u32, 0, le);
+    try w.writeInt(u32, 0xFFFFFFFF, le);
+    try w.writeAll("a.txt");
+    try w.writeInt(u16, 1, le);
+    try w.writeInt(u16, 24, le);
+    try w.writeInt(u64, 5, le); // uncompressed
+    try w.writeInt(u64, 5, le); // compressed
+    try w.writeInt(u64, 0, le); // local header offset
+    const record = buf.written().len;
+    const central_len = record - central;
+    try w.writeAll("PK\x06\x06");
+    try w.writeInt(u64, 44, le);
+    try w.writeInt(u16, 45, le);
+    try w.writeInt(u16, 45, le);
+    try w.writeInt(u32, 0, le);
+    try w.writeInt(u32, 0, le);
+    try w.writeInt(u64, 1, le);
+    try w.writeInt(u64, 1, le);
+    try w.writeInt(u64, central_len, le);
+    try w.writeInt(u64, central, le);
+    try w.writeAll("PK\x06\x07");
+    try w.writeInt(u32, 0, le);
+    try w.writeInt(u64, record, le);
+    try w.writeInt(u32, 1, le);
+    try w.writeAll("PK\x05\x06");
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0, le);
+    try w.writeInt(u16, 0xFFFF, le);
+    try w.writeInt(u16, 0xFFFF, le);
+    try w.writeInt(u32, 0xFFFFFFFF, le);
+    try w.writeInt(u32, 0xFFFFFFFF, le);
+    try w.writeInt(u16, 0, le);
+    const archive = try Archive.init(std.testing.allocator, buf.written());
+    defer std.testing.allocator.free(archive.entries);
+    try std.testing.expectEqual(@as(usize, 1), archive.entries.len);
+    const data = try archive.read(std.testing.allocator, "a.txt");
+    defer std.testing.allocator.free(data);
+    try std.testing.expectEqualStrings("hello", data);
 }

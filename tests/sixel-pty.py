@@ -84,6 +84,19 @@ with tempfile.TemporaryDirectory(prefix='kata-sixel-') as folder:
             subprocess.run(['sixel2png', '-i', str(tmp / 'f.six'), '-o', str(tmp / 'f.png')], check=True)
             assert (tmp / 'f.png').read_bytes()[:4] == b'\x89PNG'
         send(b'\x1b', 'j/k or')
+        # Unchanged image: the redraw reuses the identical cached sixel.
+        same, _ = send(b'k')
+        same, _ = send(b'j')
+        assert SIXEL.search(same).group(0) == SIXEL.search(frame).group(0)
+        # Zoom: - shrinks, + restores, ++ goes larger (up to full height).
+        send(b'-', '½ screen')
+        small, _ = send(b'-', '¼ screen')
+        assert int(SIXEL.findall(small)[0][1]) < height, 'smaller at ¼'
+        send(b'+', '½ screen')
+        back, _ = send(b'+', '(default)')
+        assert int(SIXEL.findall(back)[0][1]) == height, 'restored by +'
+        send(b'++', 'enlarged')
+        send(b'--', '(default)')
         # Scroll so the image's top leaves the screen: cropped band at row 3.
         frame, _ = send(b'j' * 15)
         cropped = SIXEL.findall(frame)

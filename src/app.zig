@@ -20,6 +20,10 @@ const Shelf = struct {
     entries: []const ingest.IndexEntry = &.{},
     books: []const start.Book = &.{},
     notice: ?[]const u8 = null,
+    /// Parsed books kept for the session (search and reopening never
+    /// re-read or re-parse). Reset whenever the index is reloaded.
+    cache: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+    docs: []?document.Document = &.{},
 };
 
 fn shelve(allocator: std.mem.Allocator, shelf: *Shelf, entries: []const ingest.IndexEntry) !void {
@@ -27,6 +31,96 @@ fn shelve(allocator: std.mem.Allocator, shelf: *Shelf, entries: []const ingest.I
     for (entries, 0..) |entry, i| books[i] = .{ .title = entry.title, .author = entry.author, .chapters = entry.chapters };
     shelf.entries = entries;
     shelf.books = books;
+    _ = shelf.cache.reset(.free_all);
+    shelf.docs = try shelf.cache.allocator().alloc(?document.Document, entries.len);
+    @memset(shelf.docs, null);
+}
+
+const BookResult = struct { exit: book_reader.Exit, notice: ?[]const u8 = null };
+
+/// Library entry whose title names a Psalter (first match).
+fn psalterIndex(shelf: *Shelf) ?usize {
+    for (shelf.entries, 0..) |entry, index| {
+        if (std.ascii.indexOfIgnoreCase(entry.title, "psalter") != null) return index;
+    }
+    return null;
+}
+
+/// Parsed book `index`, loaded from disk on first use only.
+fn loadBook(io: std.Io, shelf: *Shelf, index: usize) !document.Document {
+    if (shelf.docs[index]) |doc| return doc;
+    const allocator = shelf.cache.allocator();
+    const entry = shelf.entries[index];
+    const path = try std.fs.path.join(allocator, &.{ shelf.folders.library, entry.file });
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(256 << 20));
+    const doc = try document.parse(allocator, bytes);
+    shelf.docs[index] = doc;
+    return doc;
+}
+
+/// Reads library book `index`; `psalm` opens a Psalter at that psalm,
+/// `start` at a block (otherwise the saved position).
+fn openBook(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, psalm: ?u16) !BookResult {
+    return openBookAt(allocator, io, shelf, index, base, caps, psalm, null);
+}
+
+fn openBookAt(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, psalm: ?u16, start_at: ?book_reader.Position) !BookResult {
+    const entry = shelf.entries[index];
+    const doc = loadBook(io, shelf, index) catch |err| {
+        return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "Cannot open {s}: {s}. Re-run ingest.", .{ entry.title, @errorName(err) }) };
+    };
+    var position = start_at;
+    if (psalm) |number| {
+        position = book_reader.psalmPosition(doc, number) orelse
+            return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "Psalm {d} not found in {s}.", .{ number, entry.title }) };
+    }
+    return .{ .exit = try book_reader.run(std.heap.page_allocator, io, doc, entry.file, base, shelf.folders.library, caps, position) };
+}
+
+/// Library-wide search: one query over every converted book, results in a
+/// menu; a chosen result opens its book there, and returning from the book
+/// comes back to the results.
+fn searchBooks(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, base: []const u8, caps: @import("graphics.zig").Capabilities) !BookResult {
+    const raw = try tui.prompt(allocator, "Search all books", "Word or phrase (word-prefix, case- and accent-insensitive). Enter searches every converted book; Esc cancels.", "") orelse return .{ .exit = .home };
+    const query = search.Query.init(raw);
+    if (query.empty()) return .{ .exit = .home };
+    tui.status("Searching every converted book…") catch {};
+    const Found = struct { book: usize, position: book_reader.Position };
+    var found: std.ArrayList(Found) = .empty;
+    var labels: std.ArrayList([]const u8) = .empty;
+    var occurrences: usize = 0;
+    var books_with_hits: usize = 0;
+    const limit = 2000;
+    for (shelf.entries, 0..) |entry, index| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const doc = loadBook(io, shelf, index) catch continue;
+        const results = try book_reader.find(arena.allocator(), doc, &query);
+        if (results.hits.len > 0) books_with_hits += 1;
+        occurrences += results.occurrences;
+        for (results.hits) |hit| {
+            if (found.items.len >= limit) break;
+            const from = hit.match.start -| 30;
+            var begin = from;
+            while (begin > 0 and begin < hit.text.len and (hit.text[begin] & 0xC0) == 0x80) begin -= 1;
+            const snippet = hit.text[begin..@min(hit.text.len, hit.match.end + 60)];
+            var end = snippet.len;
+            while (end > 0 and end < snippet.len and (snippet[end] & 0xC0) == 0x80) end -= 1;
+            const chapter_title = doc.chapters[hit.section].title;
+            try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s} · {s} · {s}{s}", .{ entry.title, chapter_title, if (begin > 0) "…" else "", snippet[0..end] }));
+            try found.append(allocator, .{ .book = index, .position = .{ .chapter = hit.section, .block = hit.number - 1 } });
+        }
+    }
+    if (found.items.len == 0) return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "No matches for “{s}” in {d} books.", .{ raw, shelf.entries.len }) };
+    const description = try std.fmt.allocPrint(allocator, "“{s}”: {d} passages in {d} book{s} · {d} matches{s} · Enter opens; returning from the book comes back here", .{ raw, found.items.len, books_with_hits, if (books_with_hits == 1) "" else "s", occurrences, if (found.items.len >= limit) " (first 2000 shown)" else "" });
+    var selected: usize = 0;
+    while (!tui.isInterrupted()) {
+        selected = try tui.choose(allocator, "Search results", description, labels.items, selected, 1) orelse return .{ .exit = .home };
+        const hit = found.items[selected];
+        const result = try openBookAt(allocator, io, shelf, hit.book, base, caps, null, hit.position);
+        if (result.exit == .quit) return result;
+    }
+    return .{ .exit = .home };
 }
 
 /// Quick startup check: convert only new/changed EPUBs, then load the index.
@@ -208,22 +302,16 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             },
             .book => |index| {
                 active = null;
-                const entry = shelf.entries[index];
-                var book_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                defer book_arena.deinit();
-                const work = book_arena.allocator();
-                const path = try std.fs.path.join(work, &.{ shelf.folders.library, entry.file });
-                const bytes = std.Io.Dir.cwd().readFileAlloc(init.io, path, work, .limited(256 << 20)) catch |err| {
-                    notice = try std.fmt.allocPrint(allocator, "Cannot open {s}: {s}.", .{ entry.title, @errorName(err) });
-                    continue;
-                };
-                const doc = document.parse(work, bytes) catch |err| {
-                    notice = try std.fmt.allocPrint(allocator, "{s} is not a readable Kata document ({s}). Re-run ingest.", .{ entry.title, @errorName(err) });
-                    continue;
-                };
-                const exit = try book_reader.run(std.heap.page_allocator, init.io, doc, entry.file, base, shelf.folders.library, graphics_caps);
-                if (exit == .quit) return;
-                notice = "Library";
+                const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps, null);
+                if (result.exit == .quit) return;
+                notice = result.notice orelse "Library";
+                continue;
+            },
+            .search_books => {
+                active = null;
+                const result = try searchBooks(allocator, init.io, &shelf, base, graphics_caps);
+                if (result.exit == .quit) return;
+                notice = result.notice orelse "Library";
                 continue;
             },
         }
@@ -296,6 +384,16 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
             },
             .choose_plan => |index| target = .{ .plan = index },
             .open_location => |at| target = .{ .free = at },
+            .open_psalter => |psalm| {
+                const index = psalterIndex(&shelf) orelse {
+                    notice = "No ingested Psalter found. Put a Psalter EPUB in the ingest folder; P then opens it at the current psalm.";
+                    continue;
+                };
+                const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps, psalm);
+                if (result.exit == .quit) return;
+                notice = result.notice orelse "Back from the Psalter.";
+                continue;
+            },
             .start_day => |day| {
                 if (free != null) continue;
                 changed_day = day;
@@ -310,7 +408,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         switch (target) {
             .plan => |index| target_plan = index,
             .free => |at| target_free = at,
-            .book, .folders => unreachable, // only chosen from the Library menu
+            .book, .folders, .search_books => unreachable, // only chosen from the Library menu
         }
         const target_entry = plans.entries.items[target_plan];
         const target_path = if (target_free) |at| try reading.path(temporary, base, at, null) else try catalog.progressPath(temporary, base, base_hash, target_entry.hash);

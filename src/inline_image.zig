@@ -19,8 +19,13 @@ pub const Fit = struct { width: u32, height: u32, rows: u16 };
 /// Scales (w, h) to at most `cols` cells wide and `max_rows` cells tall,
 /// never enlarging. `rows` is the number of text lines to reserve.
 pub fn fit(w: u32, h: u32, cols: usize, max_rows: usize, cell_w: u16, cell_h: u16) ?Fit {
+    return fitScaled(w, h, cols, max_rows, cell_w, cell_h, false);
+}
+
+/// `enlarge`: small images grow to fill the column/height limits.
+pub fn fitScaled(w: u32, h: u32, cols: usize, max_rows: usize, cell_w: u16, cell_h: u16, enlarge: bool) ?Fit {
     if (w == 0 or h == 0 or cols == 0 or max_rows == 0 or cell_w == 0 or cell_h == 0) return null;
-    var width: u64 = @min(w, cols * cell_w);
+    var width: u64 = if (enlarge) cols * cell_w else @min(w, cols * cell_w);
     var height: u64 = @max(1, @as(u64, h) * width / w);
     const max_h = max_rows * @as(u64, cell_h);
     if (height > max_h) {
@@ -37,6 +42,11 @@ const Bitmap = struct {
     pixels: []u8,
     /// Kitty image id once transmitted to the terminal (0: not yet).
     kitty_id: u32 = 0,
+    /// Last sixel encoding (rows top..top+height), reused while the visible
+    /// part is unchanged so redraws do not re-encode (~10 ms per image).
+    sixel: []u8 = &.{},
+    sixel_top: usize = 0,
+    sixel_height: usize = 0,
 };
 
 /// Kitty graphics: transmits RGB once (chunked base64, quiet), then each
@@ -78,6 +88,8 @@ pub const Renderer = struct {
     pending_clear: bool = false,
 
     next_id: u32 = 1,
+    /// Let small images grow to the size limits (largest zoom level).
+    enlarge: bool = false,
 
     pub fn enabled(self: *const Renderer) bool {
         return self.caps.protocol != .none and self.caps.cell_width > 0 and self.caps.cell_height > 0;
@@ -101,6 +113,13 @@ pub const Renderer = struct {
         return true;
     }
 
+    /// Switches enlargement of small images; drops bitmaps at the old size.
+    pub fn setEnlarge(self: *Renderer, on: bool) void {
+        if (on == self.enlarge) return;
+        self.enlarge = on;
+        self.clear();
+    }
+
     fn clear(self: *Renderer) void {
         var it = self.bitmaps.iterator();
         // Forget transmitted kitty images too (they are re-sent if needed).
@@ -108,6 +127,7 @@ pub const Renderer = struct {
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             self.allocator.free(entry.value_ptr.pixels);
+            self.allocator.free(entry.value_ptr.sixel);
         }
         self.bitmaps.clearRetainingCapacity();
         self.cached_bytes = 0;
@@ -143,7 +163,7 @@ pub const Renderer = struct {
     pub fn rows(self: *Renderer, name: []const u8, cols: usize, max_rows: usize) ?u16 {
         if (!self.enabled()) return null;
         const d = self.dimensions(name) orelse return null;
-        const f = fit(d[0], d[1], cols, max_rows, self.caps.cell_width, self.caps.cell_height) orelse return null;
+        const f = fitScaled(d[0], d[1], cols, max_rows, self.caps.cell_width, self.caps.cell_height, self.enlarge) orelse return null;
         return f.rows;
     }
 
@@ -171,7 +191,7 @@ pub const Renderer = struct {
         }
         errdefer self.allocator.free(key);
         const d = self.dimensions(name) orelse return null;
-        const f = fit(d[0], d[1], cols, max_rows, self.caps.cell_width, self.caps.cell_height) orelse return null;
+        const f = fitScaled(d[0], d[1], cols, max_rows, self.caps.cell_width, self.caps.cell_height, self.enlarge) orelse return null;
         const full = try self.path(name);
         defer self.allocator.free(full);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
@@ -218,7 +238,19 @@ pub const Renderer = struct {
         }
         const height = (@min(count, entry.fit.rows - first_row) * cell_h) / 6 * 6;
         if (height == 0) return true;
-        try sixel.encode(self.allocator, w, entry.pixels, entry.fit.width, top, height);
+        const cached = self.bitmaps.getPtr(try self.cacheKey(name, cols, max_rows)) orelse return false;
+        if (cached.sixel.len == 0 or cached.sixel_top != top or cached.sixel_height != height) {
+            var out: std.Io.Writer.Allocating = .init(self.allocator);
+            defer out.deinit();
+            try sixel.encode(self.allocator, &out.writer, entry.pixels, entry.fit.width, top, height);
+            const bytes = try out.toOwnedSlice();
+            self.cached_bytes = self.cached_bytes - cached.sixel.len + bytes.len;
+            self.allocator.free(cached.sixel);
+            cached.sixel = bytes;
+            cached.sixel_top = top;
+            cached.sixel_height = height;
+        }
+        try w.writeAll(cached.sixel);
         return true;
     }
 };
@@ -246,4 +278,10 @@ test "kitty transmit chunks base64 with continuation flags" {
     try std.testing.expect(std.mem.startsWith(u8, s, "\x1b_Ga=t,q=2,f=24,i=5,s=4000,v=1,m=1;"));
     try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, s, "\x1b\\")); // 12000 bytes / 3072
     try std.testing.expect(std.mem.indexOf(u8, s, "\x1b_Gq=2,m=0;") != null);
+}
+
+test "enlarge grows small images to the column" {
+    const grown = fitScaled(100, 50, 80, 30, 10, 20, true).?;
+    try std.testing.expectEqual(Fit{ .width = 800, .height = 400, .rows = 20 }, grown);
+    try std.testing.expectEqual(@as(u32, 100), fitScaled(100, 50, 80, 30, 10, 20, false).?.width);
 }

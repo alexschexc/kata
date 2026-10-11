@@ -4,7 +4,7 @@ const source = @import("source.zig");
 const catalog = @import("catalog.zig");
 const tui = @import("tui.zig");
 
-pub const Choice = union(enum) { plan: usize, free: library.Location, book: usize, folders };
+pub const Choice = union(enum) { plan: usize, free: library.Location, book: usize, folders, search_books };
 
 /// Ingested documents offered in the Library after the built-in titles.
 pub const Book = struct { title: []const u8, author: []const u8 = "", chapters: u32 = 0 };
@@ -138,9 +138,11 @@ pub fn run(plans: []const catalog.Entry, selected_plan: usize, io: std.Io, last_
     for (books) |book| {
         try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}{s} · {d} chapters", .{ book.title, if (book.author.len > 0) " · " else "", book.author, book.chapters }));
     }
+    if (books.len > 0) try labels.append(allocator, "Search all books · find a word or phrase across every converted book");
     try labels.append(allocator, "Ingest folders · choose where EPUBs are read from and converted books are kept");
     while (!tui.isInterrupted()) {
         const title_row = try tui.choose(allocator, "Library", notice, labels.items, selected_title, 1) orelse return null;
+        if (books.len > 0 and title_row == visible_titles.len + books.len) return .search_books;
         if (title_row >= visible_titles.len + books.len) return .folders;
         if (title_row >= visible_titles.len) return .{ .book = title_row - visible_titles.len };
         const title_index = visible_titles[title_row];

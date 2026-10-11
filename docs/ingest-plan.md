@@ -32,15 +32,34 @@ Done (files):
 - All 10 examplePubs convert without errors (5.9 s cold, ~0.02 s cached).
 
 Known gaps / next ideas:
-- Front matter (dedication, title pages) can render as many one-line
-  paragraphs where the source uses a `<p>` per line; could merge short
-  consecutive `prose`/`quote` lines.
+- DONE 2026-10-10: runs of 3+ short paragraphs (≤ 48 cells; title pages,
+  dedications, contents lists) stack without blank spacer lines.
 - No Bible-style parallel alignment of the Psalter (could become a 4th Psalms
-  pane later; it is already LXX-numbered).
+  pane later; it is already LXX-numbered). Scoped 2026-10-10: the Bible
+  reader assumes exactly 3 panes as fixed `[3]` arrays in layout.Row/Line,
+  state.State (positions/enabled — saved state.json format), tui (focus,
+  tops, toggles), search, cli dump, book_catalog. Plan: make pane count a
+  comptime constant 4, keep pane 4 empty outside Psalms, migrate old
+  3-element state.json, map Psalter blocks (heading "Psalm N" + verse
+  numbers, superscription → verse 0?) from the ingested KATA-DOC into
+  source.Verse streams at load time.
+  Interim (DONE 2026-10-10): `P` in the Bible reader on a psalm opens the
+  ingested Psalter (first library title containing "psalter") at the same
+  Greek/Latin psalm (`book_reader.psalmPosition` matches "Psalm <roman>. N");
+  `m` returns to the Bible reading.
 - Repeated running header/footer stripping not implemented (no sample needs
   it; PDF-converted EPUBs would).
-- Tables are flattened to rows. SVG/GIF/WebP images stay placeholders.
-- Zip64 not supported. Search in a book is per-document only.
+- DONE 2026-10-10: tables render as aligned columns (water-filled widths,
+  wrapped cells, a rule between rows once any cell wraps); too-narrow
+  screens fall back to flattened rows. Unit test lays out every sample
+  chapter at widths 20/37/64/100.
+- DONE 2026-10-10: Zip64 central directory + extra fields (unit test with a
+  hand-built zip64 archive).
+- SVG/GIF/WebP: no sample contains any (all 1,031 images are PNG/JPEG);
+  deferred until a real book needs them. Same for header/footer stripping.
+- DONE 2026-10-10: Library → "Search all books" searches every converted
+  book (same matcher), results menu (first 2000), Enter opens the book at
+  the passage, `m` returns to the results. Test: tests/library-pty.py.
 - Folder prompt has no file browser; paths are typed (paste works).
 
 ## Inline images — stage 4 DONE (Sixel), 2026-10-09
@@ -76,8 +95,9 @@ Known gaps / next ideas:
   placements AND images left unused, so kitty frames erase line by line
   (`CSI 2K`) instead; found when images vanished on first scroll in real
   Ghostty (2026-10-10). Fix confirmed by the user in real Ghostty.
-- Next ideas: `+`/`-` to change image
-  size; skip sixel re-encode of unchanged images on redraw.
+- DONE 2026-10-10: `+`/`-` image size (¼, ½, ¾ default, full, full with
+  small images enlarged); sixel bytes cached per bitmap and reused while
+  the visible part is unchanged (was ~10 ms re-encode per frame).
 
 ## Images (2026-10-09, stages 1–3 done)
 

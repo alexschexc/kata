@@ -596,7 +596,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 else if (panel_open)
                     "j/k scroll · h/l focus · / search · r results · n/N next/previous match · x close search"
                 else
-                    "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search";
+                    "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search · P Psalter";
                 try w.writeAll(clipped(help, columns));
                 try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
                 if (prompting) {
@@ -716,6 +716,14 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
         }
         switch (key) {
             'q', 3 => break,
+            'P' => if (lines.len > 0) {
+                const row = rows[lines[@min(tops[state.focus], lines.len - 1)].row];
+                if (std.mem.eql(u8, row.book, "Psalms")) {
+                    remember(lines, tops, state);
+                    return .{ .open_psalter = row.chapter };
+                }
+                notice = "P opens the ingested Psalter from a psalm (Greek/Latin numbering).";
+            },
             'm', 'o', 'H', 'L' => {
                 if ((key == 'H' or key == 'L') and options.plan_mode) continue;
                 remember(lines, tops, state);

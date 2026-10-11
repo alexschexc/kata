@@ -82,6 +82,7 @@ fn render(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize)
 fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: usize, images: ?*inline_image.Renderer, max_rows: usize) ![]Line {
     var lines: std.ArrayList(Line) = .empty;
     var page: []const u8 = "";
+    const stacked = try stackedLines(allocator, chapter.blocks);
     for (chapter.blocks, 0..) |block, index| {
         if (block.page.len > 0 and !std.mem.eql(u8, block.page, page)) {
             if (index > 0) {
@@ -90,7 +91,7 @@ fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: us
             }
             page = block.page;
         }
-        if (index > 0 and block.kind.spaced()) try lines.append(allocator, .{ .block = index, .text = "", .full = "" });
+        if (index > 0 and block.kind.spaced() and !stacked[index]) try lines.append(allocator, .{ .block = index, .text = "", .full = "" });
         const text = switch (block.kind) {
             .image => try std.fmt.allocPrint(allocator, "▣ image · i opens it  ({s})", .{block.text}),
             .list_item => try std.fmt.allocPrint(allocator, "• {s}", .{block.text}),
@@ -98,6 +99,19 @@ fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: us
             .heading => if (block.level <= 1) try std.fmt.allocPrint(allocator, "{s}", .{block.text}) else block.text,
             else => block.text,
         };
+        if (block.kind == .table_row) {
+            // The first row of a run lays out the whole table as a grid.
+            if (index > 0 and chapter.blocks[index - 1].kind == .table_row) continue;
+            var end = index;
+            while (end < chapter.blocks.len and chapter.blocks[end].kind == .table_row) end += 1;
+            if (try appendTable(allocator, &lines, chapter.blocks, index, end, width)) continue;
+            // Too narrow for a grid: rows fall through to flattened text.
+            for (chapter.blocks[index..end], index..) |row, at| {
+                const flat = try std.fmt.allocPrint(allocator, "  {s}", .{row.text});
+                for (try layout.wrap(allocator, flat, width)) |piece| try lines.append(allocator, .{ .block = at, .text = piece, .full = flat });
+            }
+            continue;
+        }
         if (block.kind == .image) if (images) |renderer| if (renderer.rows(block.text, width, max_rows)) |reserved| {
             for (0..reserved) |r| try lines.append(allocator, .{ .block = index, .text = "", .full = "", .style = .figure, .image = block.text, .image_row = @intCast(r) });
             continue;
@@ -117,9 +131,125 @@ fn renderWith(allocator: std.mem.Allocator, chapter: document.Chapter, width: us
     return lines.toOwnedSlice(allocator);
 }
 
+const cell_separator = " │ ";
+
+/// Lays out table rows [start, end) (cells joined by " │ " at conversion)
+/// as aligned columns within `width`, wrapping long cells inside their
+/// column. Returns false when the columns cannot fit (caller flattens).
+fn appendTable(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), blocks: []const document.Block, start: usize, end: usize, width: usize) !bool {
+    const indent = 2;
+    const min_column = 4;
+    var rows: std.ArrayList([][]const u8) = .empty;
+    var columns: usize = 0;
+    for (blocks[start..end]) |row| {
+        var cells: std.ArrayList([]const u8) = .empty;
+        // Split on the bar alone: an empty last cell leaves a bare " │".
+        var it = std.mem.splitSequence(u8, row.text, "│");
+        while (it.next()) |cell| try cells.append(allocator, std.mem.trim(u8, cell, " "));
+        columns = @max(columns, cells.items.len);
+        try rows.append(allocator, try cells.toOwnedSlice(allocator));
+    }
+    const separators = (columns - 1) * cell_separator.len;
+    if (columns == 0 or indent + separators + columns * min_column > width) return false;
+    const natural = try allocator.alloc(usize, columns);
+    @memset(natural, 1);
+    for (rows.items) |cells| for (cells, 0..) |cell, c| {
+        natural[c] = @max(natural[c], layout.displayWidth(cell));
+    };
+    // Water-fill: columns narrower than an equal share keep their natural
+    // width; the rest split what remains evenly.
+    const widths = try allocator.alloc(usize, columns);
+    const fixed = try allocator.alloc(bool, columns);
+    @memset(fixed, false);
+    var available = width - indent - separators;
+    var open = columns;
+    var changed = true;
+    while (changed and open > 0) {
+        changed = false;
+        const share = available / open;
+        for (natural, 0..) |n, c| if (!fixed[c] and n <= share) {
+            widths[c] = n;
+            fixed[c] = true;
+            available -= n;
+            open -= 1;
+            changed = true;
+        };
+    }
+    if (open > 0) {
+        const share = available / open;
+        if (share < min_column) return false;
+        var extra = available - share * open;
+        for (fixed, 0..) |f, c| if (!f) {
+            widths[c] = share + @intFromBool(extra > 0);
+            extra -|= 1;
+        };
+    }
+    // A cell narrower than min_column (or than wrap's 2-cell minimum)
+    // would be unreadable: flatten instead.
+    for (widths, natural) |w, n| if (w < @min(n, min_column) or w < 2 and n > 1) return false;
+    var wrapped_any = false;
+    var cell_lines: std.ArrayList([][][]const u8) = .empty;
+    for (rows.items) |cells| {
+        const per = try allocator.alloc([][]const u8, columns);
+        for (per, 0..) |*out, c| {
+            const cell = if (c < cells.len) cells[c] else "";
+            out.* = if (cell.len == 0) &.{} else layout.wrap(allocator, cell, @max(2, widths[c])) catch return false;
+            if (out.len > 1) wrapped_any = true;
+        }
+        try cell_lines.append(allocator, per);
+    }
+    var table_width: usize = separators;
+    for (widths) |w| table_width += w;
+    for (cell_lines.items, 0..) |per, r| {
+        // Wrapped tables get a rule between rows so cells stay grouped.
+        if (r > 0 and wrapped_any) {
+            const rule_line = try allocator.alloc(u8, indent + table_width * "─".len);
+            @memset(rule_line[0..indent], ' ');
+            for (0..table_width) |i| @memcpy(rule_line[indent + i * "─".len ..][0.."─".len], "─");
+            try lines.append(allocator, .{ .block = start + r, .text = rule_line, .full = rule_line, .style = .page });
+        }
+        var height: usize = 1;
+        for (per) |cell| height = @max(height, cell.len);
+        for (0..height) |line_index| {
+            var text: std.ArrayList(u8) = .empty;
+            try text.appendNTimes(allocator, ' ', indent);
+            for (per, 0..) |cell, c| {
+                if (c > 0) try text.appendSlice(allocator, cell_separator);
+                const piece = if (line_index < cell.len) cell[line_index] else "";
+                try text.appendSlice(allocator, piece);
+                if (c + 1 < columns) try text.appendNTimes(allocator, ' ', widths[c] -| layout.displayWidth(piece));
+            }
+            const owned = try text.toOwnedSlice(allocator);
+            const trimmed = std.mem.trimEnd(u8, owned, " ");
+            try lines.append(allocator, .{ .block = start + r, .text = trimmed, .full = trimmed });
+        }
+    }
+    return true;
+}
+
+/// Title pages, dedications, and contents lists often use one `<p>` per
+/// line. In runs of 3+ short paragraphs, true marks the blocks that follow
+/// another in the run: they are drawn without the blank spacer line.
+fn stackedLines(allocator: std.mem.Allocator, blocks: []const document.Block) ![]bool {
+    const short_limit = 48;
+    const stacked = try allocator.alloc(bool, blocks.len);
+    @memset(stacked, false);
+    var start: usize = 0;
+    var index: usize = 0;
+    while (index <= blocks.len) : (index += 1) {
+        const short = index < blocks.len and blocks[index].kind == .paragraph and blocks[index].verse == 0 and
+            std.mem.indexOfScalar(u8, blocks[index].text, '\n') == null and layout.displayWidth(blocks[index].text) <= short_limit and
+            (index == start or blocks[index].page.len == 0);
+        if (short) continue;
+        if (index - start >= 3) @memset(stacked[start + 1 .. index], true);
+        start = index + 1;
+    }
+    return stacked;
+}
+
 /// Every block of the document containing the query, as search hits.
 /// `Hit.section` = chapter index, `Hit.number` = block index (+1).
-fn find(allocator: std.mem.Allocator, doc: document.Document, query: *const search.Query) !search.Results {
+pub fn find(allocator: std.mem.Allocator, doc: document.Document, query: *const search.Query) !search.Results {
     var hits: std.ArrayList(search.Hit) = .empty;
     var occurrences: usize = 0;
     for (doc.chapters, 0..) |chapter, c| for (chapter.blocks, 0..) |block, b| {
@@ -129,6 +259,20 @@ fn find(allocator: std.mem.Allocator, doc: document.Document, query: *const sear
         try hits.append(allocator, .{ .section = c, .chapter = @intCast(@min(c, std.math.maxInt(u16))), .number = @intCast(@min(b + 1, std.math.maxInt(u16))), .label = .{ .chapter = 0, .number = @intCast(@min(block.verse, std.math.maxInt(u16))) }, .text = block.text, .match = first, .occurrences = @intCast(count) });
     };
     return .{ .hits = try hits.toOwnedSlice(allocator), .occurrences = occurrences };
+}
+
+/// Position of psalm `number` (Greek/Latin numbering) in a Psalter whose
+/// psalm headings read "Psalm <roman>. <number>" (or "Psalm <number>").
+pub fn psalmPosition(doc: document.Document, number: u16) ?Position {
+    for (doc.chapters, 0..) |chapter, c| for (chapter.blocks, 0..) |block, b| {
+        if (block.kind != .heading or !std.mem.startsWith(u8, block.text, "Psalm ")) continue;
+        var words = std.mem.tokenizeAny(u8, block.text, " .");
+        var last: []const u8 = "";
+        while (words.next()) |word| last = word;
+        const value = std.fmt.parseInt(u16, last, 10) catch continue;
+        if (value == number) return .{ .chapter = c, .block = b };
+    };
+    return null;
 }
 
 fn statePath(allocator: std.mem.Allocator, base: []const u8, file: []const u8) ![]const u8 {
@@ -189,11 +333,11 @@ fn openImage(io: std.Io, path: []const u8) !void {
     _ = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .pgid = if (@import("builtin").os.tag == .windows) null else 0 });
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities) !Exit {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities, start: ?Position) !Exit {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var position = loadPosition(allocator, io, base, file);
+    var position = start orelse loadPosition(allocator, io, base, file);
     if (position.chapter >= doc.chapters.len) position = .{};
     var finder: search.State = .{};
     defer finder.deinit();
@@ -221,6 +365,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
     defer if (images.caps.protocol == .kitty) tui.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\") catch {};
     var laid_height: usize = 0;
 
+    var zoom: usize = 2;
     loop: while (!tui.isInterrupted()) {
         const size = try tui.screenSize();
         if (size.columns != old.columns or size.rows != old.rows) {
@@ -239,7 +384,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
         const text_width = @min(100, (columns - panel_width) -| (gutter_width + 3));
         const body_height = height -| 5;
         const usable = body_height >= 3 and (!reader_visible or text_width >= 20);
-        const image_rows = @max(4, body_height * 3 / 4);
+        // Zoom levels (+/-): ¼, ½, ¾ (default), full body, full + enlarge.
+        const image_rows = @max(4, body_height * @min(zoom + 1, 4) / 4);
+        images.setEnlarge(zoom == 4);
         if (usable and reader_visible and (text_width != laid_width or chapter != laid_chapter or (images.enabled() and image_rows != laid_height))) {
             const keep = anchor_block orelse if (lines.len > 0) lines[@min(top, lines.len - 1)].block else 0;
             _ = wrapping.reset(.retain_capacity);
@@ -344,7 +491,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
                 else if (finder.open and finder.focus)
                     "j/k select · Enter open · n/N next/previous · Tab/Esc back to reader · / new search · x close search"
                 else
-                    "j/k or ↑/↓ scroll · Ctrl-d/u page · g/G ends · H/L chapter · t chapters · / search · n/N · i image · x close";
+                    "j/k or ↑/↓ scroll · Ctrl-d/u page · g/G ends · H/L chapter · t chapters · / search · n/N · i image · +/- size · x close";
                 try w.writeAll(tui.clipped(help, columns));
                 try w.print("\x1b[{d};1H" ++ dim, .{height});
                 if (finder.prompt) {
@@ -484,6 +631,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
                 finder.close();
                 notice = "Search closed.";
             },
+            '+', '=', '-', '_' => {
+                const grow = key == '+' or key == '=';
+                if (grow and zoom < 4) zoom += 1 else if (!grow and zoom > 0) zoom -= 1;
+                const names = [_][]const u8{ "¼ screen", "½ screen", "¾ screen (default)", "full screen", "full screen, small images enlarged" };
+                notice = if (images.enabled()) try std.fmt.allocPrint(allocator, "Images: up to {s}. +/- change size.", .{names[zoom]}) else "Inline images are off in this terminal; i opens them.";
+                anchor_block = if (lines.len > 0) lines[@min(top, lines.len - 1)].block else null;
+            },
             else => {},
         }
     }
@@ -573,6 +727,71 @@ test "chapters render with verse gutters, page rules, and intact code" {
     try std.testing.expect(page_rule and code_indent);
 }
 
+test "table rows render as aligned columns that wrap within the width" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const short: document.Chapter = .{ .title = "T", .blocks = &.{
+        .{ .kind = .table_row, .text = "Day │ Matins │ Vespers" },
+        .{ .kind = .table_row, .text = "Su │ II, III │" },
+        .{ .kind = .table_row, .text = "M │ IV, V │ VI" },
+    } };
+    const grid = try render(arena.allocator(), short, 60);
+    try std.testing.expectEqual(@as(usize, 3), grid.len);
+    try std.testing.expectEqualStrings("  Day │ Matins  │ Vespers", grid[0].text);
+    try std.testing.expectEqualStrings("  Su  │ II, III │", grid[1].text);
+    try std.testing.expectEqualStrings("  M   │ IV, V   │ VI", grid[2].text);
+    try std.testing.expectEqual(@as(usize, 2), grid[2].block);
+    const long: document.Chapter = .{ .title = "T", .blocks = &.{
+        .{ .kind = .table_row, .text = "Concept │ What you might model" },
+        .{ .kind = .table_row, .text = "What is the goal? │ Define too slow. How fast should the information be received and why?" },
+    } };
+    const wrapped = try render(arena.allocator(), long, 40);
+    var rules: usize = 0;
+    for (wrapped) |line| {
+        try std.testing.expect(layout.displayWidth(line.text) <= 40);
+        if (line.style == .page) rules += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), rules);
+    try std.testing.expect(wrapped.len > 4);
+    // Columns line up: every content line has its separator at one column.
+    const bar = std.mem.indexOf(u8, wrapped[0].text, "│").?;
+    for (wrapped) |line| if (line.style != .page) try std.testing.expectEqual(bar, std.mem.indexOf(u8, line.text, "│").?);
+}
+
+test "psalm headings are located by their arabic number" {
+    const doc: document.Document = .{ .title = "Psalter", .chapters = &.{
+        .{ .title = "Foreword", .blocks = &.{.{ .kind = .heading, .text = "Foreword" }} },
+        .{ .title = "The First Kathisma", .blocks = &.{
+            .{ .kind = .heading, .level = 1, .text = "The First Kathisma" },
+            .{ .kind = .heading, .level = 2, .text = "Psalm I. 1" },
+            .{ .kind = .verse, .verse = 1, .text = "Blessed is the man" },
+            .{ .kind = .heading, .level = 2, .text = "Psalm CXVIII. 118" },
+        } },
+    } };
+    try std.testing.expectEqual(Position{ .chapter = 1, .block = 1 }, psalmPosition(doc, 1).?);
+    try std.testing.expectEqual(Position{ .chapter = 1, .block = 3 }, psalmPosition(doc, 118).?);
+    try std.testing.expect(psalmPosition(doc, 151) == null);
+}
+
+test "runs of short paragraphs stack without spacer lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const chapter: document.Chapter = .{ .title = "Title", .blocks = &.{
+        .{ .kind = .paragraph, .text = "Second Edition" },
+        .{ .kind = .paragraph, .text = "Designing Fine-Grained Systems" },
+        .{ .kind = .paragraph, .text = "Sam Newman" },
+        .{ .kind = .paragraph, .text = "A longer paragraph that is ordinary prose and keeps its spacing above it." },
+        .{ .kind = .paragraph, .text = "Short one" },
+        .{ .kind = .paragraph, .text = "Short two" },
+    } };
+    const lines = try render(arena.allocator(), chapter, 100);
+    var texts: std.ArrayList([]const u8) = .empty;
+    for (lines) |line| try texts.append(arena.allocator(), line.text);
+    const expected = [_][]const u8{ "Second Edition", "Designing Fine-Grained Systems", "Sam Newman", "", "A longer paragraph that is ordinary prose and keeps its spacing above it.", "", "Short one", "", "Short two" };
+    try std.testing.expectEqual(expected.len, texts.items.len);
+    for (expected, texts.items) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
 test "document search returns chapter and block locations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -587,4 +806,29 @@ test "document search returns chapter and block locations" {
     try std.testing.expectEqual(@as(u16, 2), results.hits[0].number);
     try std.testing.expectEqual(@as(u16, 7), results.hits[0].label.number);
     try std.testing.expectEqual(@as(usize, 1), results.hits[1].section);
+}
+
+test "every sample book chapter lays out at narrow and wide widths" {
+    const io = std.testing.io;
+    var dir = std.Io.Dir.cwd().openDir(io, "examplePubs", .{ .iterate = true }) catch return error.SkipZigTest;
+    defer dir.close(io);
+    var it = dir.iterate();
+    var books: usize = 0;
+    while (try it.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".epub")) continue;
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const bytes = try dir.readFileAlloc(io, entry.name, a, .limited(128 << 20));
+        const result = try @import("convert.zig").convert(a, bytes, entry.name);
+        for (result.doc.chapters) |chapter| for ([_]usize{ 20, 37, 64, 100 }) |width| {
+            const lines = render(a, chapter, width) catch |err| {
+                std.debug.print("{s} · {s} @ {d}: {s}\n", .{ entry.name, chapter.title, width, @errorName(err) });
+                return err;
+            };
+            for (lines) |line| try std.testing.expect(layout.displayWidth(line.text) <= width + 2);
+        };
+        books += 1;
+    }
+    try std.testing.expect(books >= 2);
 }
