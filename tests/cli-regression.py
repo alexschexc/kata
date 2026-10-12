@@ -77,6 +77,26 @@ with tempfile.TemporaryDirectory(prefix=".prototype-jump-test-", dir=root) as tm
     run("--plan", custom, "--state", other, "--start-day", 1, "--confirm")
     assert json.loads(other.read_text())["next_day"] == 0
     print("PASS arbitrary plans and restarting a completed nonrepeating plan")
+
+# ingest flags must never overwrite the user's saved folders unless --save is given
+with tempfile.TemporaryDirectory(prefix=".ingest-flags-test-", dir=root) as tmp:
+    tmp = Path(tmp).resolve()
+    cfg = tmp / "cfg"; (cfg / "kata").mkdir(parents=True)
+    saved = cfg / "kata" / "folders.json"
+    original = json.dumps({"version": 1, "ingest": str(tmp / "mine-in"), "library": str(tmp / "mine-lib")})
+    saved.write_text(original)
+    (tmp / "in").mkdir()
+    env = dict(os.environ, HOME=str(tmp), XDG_CONFIG_HOME=str(cfg), XDG_STATE_HOME=str(tmp / "st"))
+    def ingest(*a, ok=True):
+        r = subprocess.run([str(binary), "ingest", *a], cwd=root, capture_output=True, text=True, timeout=30, env=env)
+        assert (r.returncode == 0) == ok, (a, r.returncode, r.stdout, r.stderr)
+    ingest("--ingest-dir", tmp / "in", "--library-dir", tmp / "lib")
+    assert saved.read_text() == original, "one-shot flags overwrote saved folders"
+    ingest("--ingest-dir", "relative", "--library-dir", tmp / "lib", ok=False)
+    assert saved.read_text() == original
+    ingest("--save", ok=False)
+    ingest("--ingest-dir", tmp / "in", "--library-dir", "~/viahome", "--save")
+    assert json.loads(saved.read_text())["library"] == str(tmp / "viahome")
+    print("PASS ingest folder flags are one-shot, validated, and saved only with --save")
+
 print("ALL IMPORT-PROGRESS CHECKS PASSED")
-
-

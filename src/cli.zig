@@ -35,11 +35,14 @@ fn ingestCommand(init: std.process.Init, allocator: std.mem.Allocator, args: []c
     var force = false;
     var ingest_dir: ?[]const u8 = null;
     var library_dir: ?[]const u8 = null;
+    var save = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--force")) {
             force = true;
+        } else if (std.mem.eql(u8, arg, "--save")) {
+            save = true;
         } else if (std.mem.eql(u8, arg, "--ingest-dir") or std.mem.eql(u8, arg, "--library-dir")) {
             i += 1;
             if (i >= args.len) return error.MissingArgument;
@@ -48,6 +51,10 @@ fn ingestCommand(init: std.process.Init, allocator: std.mem.Allocator, args: []c
     }
     const config_home = try paths.root(allocator, init.environ_map, @import("builtin").os.tag == .windows, .config);
     const saved = try ingest.loadFolders(allocator, init.io, config_home);
+    if (save and (ingest_dir == null or library_dir == null)) return error.SaveNeedsBothFolders;
+    const home = init.environ_map.get("HOME");
+    if (ingest_dir) |d| ingest_dir = try ingest.normalizeFolder(allocator, d, home);
+    if (library_dir) |d| library_dir = try ingest.normalizeFolder(allocator, d, home);
     if ((ingest_dir == null) != (library_dir == null) and saved == null) return error.BothFoldersRequired;
     const folders: ingest.Folders = .{
         .ingest = ingest_dir orelse if (saved) |f| f.ingest else {
@@ -56,7 +63,9 @@ fn ingestCommand(init: std.process.Init, allocator: std.mem.Allocator, args: []c
         },
         .library = library_dir orelse saved.?.library,
     };
-    if (ingest_dir != null or library_dir != null) try ingest.saveFolders(allocator, init.io, config_home, folders);
+    // Flags are one-shot unless --save is given: a verification run must never
+    // overwrite the folders the user chose.
+    if (save) try ingest.saveFolders(allocator, init.io, config_home, folders);
     try output(allocator, "Ingest: {s}\nLibrary: {s}\n", .{ folders.ingest, folders.library });
     const summary = try ingest.run(allocator, init.io, folders, force);
     for (summary.reports) |report| {
@@ -87,7 +96,8 @@ pub fn run(init: std.process.Init, default_plan: []const u8, gospels: []const u8
                     "  kata                         library → title → free reading or plans\n" ++
                     "  kata --passage 'Genesis:1'   ad-hoc passage from any available book\n" ++
                     "  kata ingest [--force]        convert new/changed EPUBs and index the library\n" ++
-                    "    --ingest-dir P --library-dir P   use (and save) these folders\n" ++
+                    "    --ingest-dir P --library-dir P   use these folders for this run only\n" ++
+                    "    --save                           with both flags: remember them\n" ++
                     "  --plan PATH                  custom JSON reading plan\n" ++
                     "  --state PATH                 isolated persistent state\n" ++
                     "  --dump                       plain-text output, no state writes\n" ++
