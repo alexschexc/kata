@@ -63,6 +63,12 @@ pub const Catalog = struct {
             };
         }
     }
+    /// Drops entry `index` from the in-memory list (files are the caller's concern).
+    pub fn remove(self: *Catalog, index: usize) void {
+        var entry = self.entries.orderedRemove(index);
+        self.allocator.free(entry.id);
+        entry.plan.deinit();
+    }
     pub fn deinit(self: *Catalog) void {
         for (self.entries.items) |*entry| {
             self.allocator.free(entry.id);
@@ -75,6 +81,54 @@ pub const Catalog = struct {
 pub fn progressPath(allocator: std.mem.Allocator, base: []const u8, base_hash: u64, hash: u64) ![]const u8 {
     if (base_hash == 0 or base_hash == hash) return allocator.dupe(u8, base);
     return std.fmt.allocPrint(allocator, "{s}.plans/{x}.json", .{ base, hash });
+}
+
+fn hiddenPath(allocator: std.mem.Allocator, base: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.hidden-plans", .{base});
+}
+
+pub fn loadHidden(allocator: std.mem.Allocator, io: std.Io, base: []const u8) ![]const []const u8 {
+    const path = try hiddenPath(allocator, base);
+    defer allocator.free(path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(65536)) catch |err| switch (err) {
+        error.FileNotFound => return &.{},
+        else => return err,
+    };
+    var ids: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| if (line.len > 0) try ids.append(allocator, line);
+    return ids.items;
+}
+
+pub fn hide(allocator: std.mem.Allocator, io: std.Io, base: []const u8, id: []const u8) !void {
+    const path = try hiddenPath(allocator, base);
+    defer allocator.free(path);
+    const cwd = std.Io.Dir.cwd();
+    const old = cwd.readFileAlloc(io, path, allocator, .limited(65536)) catch |err| switch (err) {
+        error.FileNotFound => try allocator.dupe(u8, ""),
+        else => return err,
+    };
+    defer allocator.free(old);
+    const bytes = try std.fmt.allocPrint(allocator, "{s}{s}\n", .{ old, id });
+    defer allocator.free(bytes);
+    if (std.fs.path.dirname(path)) |parent| try cwd.createDirPath(io, parent);
+    const temporary = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(temporary);
+    try cwd.writeFile(io, .{ .sub_path = temporary, .data = bytes });
+    try cwd.rename(temporary, cwd, path, io);
+}
+
+/// Removes every entry whose id is in `ids` (never the last remaining plan).
+pub fn dropHidden(self: *Catalog, ids: []const []const u8) void {
+    var i: usize = self.entries.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (self.entries.items.len <= 1) return;
+        for (ids) |id| if (std.mem.eql(u8, id, self.entries.items[i].id)) {
+            self.remove(i);
+            break;
+        };
+    }
 }
 
 pub fn loadSelected(allocator: std.mem.Allocator, io: std.Io, base: []const u8) !?[]const u8 {

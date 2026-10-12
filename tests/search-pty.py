@@ -5,7 +5,7 @@ import os, re, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
-MARK = b'\x1b[48;2;210;178;116m\x1b[38;2;21;25;34m'
+MARK = b'\x1b[48;2;125;130;217m\x1b[38;2;6;11;30m'
 
 import fcntl, json, pty, select, signal, struct, subprocess, termios, time
 
@@ -60,7 +60,7 @@ class Screen:
 
 def marked(frame):
     """Texts drawn with the highlight colour."""
-    return [m.decode() for m in re.findall(re.escape(MARK) + rb'(.*?)\x1b\[48;2;21;25;34m', frame)]
+    return [m.decode() for m in re.findall(re.escape(MARK) + rb'(.*?)\x1b\[48;2;6;11;30m', frame)]
 
 
 with tempfile.TemporaryDirectory(prefix='kata-search-') as folder:

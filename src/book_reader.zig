@@ -4,18 +4,20 @@
 //! the Bible reader. Positions are saved per document.
 const std = @import("std");
 const document = @import("document.zig");
+const storage = @import("state.zig");
 const layout = @import("layout.zig");
 const search = @import("search.zig");
 const tui = @import("tui.zig");
 const inline_image = @import("inline_image.zig");
 const graphics = @import("graphics.zig");
+const theme = @import("theme.zig");
 
-const paper = "\x1b[48;2;21;25;34m";
-const ink = "\x1b[38;2;224;215;191m";
-const dim = "\x1b[38;2;134;145;156m";
-const gold = "\x1b[38;2;210;178;116m";
-const code_ink = "\x1b[38;2;168;196;160m";
-const rule = "\x1b[38;2;74;87;101m";
+const paper = theme.paper;
+const ink = theme.ink;
+const dim = theme.dim;
+const gold = theme.accent;
+const code_ink = theme.code;
+const rule = theme.rule;
 const gutter_width = 6;
 
 /// Saved position for one document (`<state>.books/<file>.json`).
@@ -23,6 +25,9 @@ pub const Position = struct { version: u8 = 1, chapter: usize = 0, block: usize 
 
 /// A plan portion being read: an end-of-reading marker is drawn before
 /// block `end` of chapter `chapter` (end == blocks.len: after the chapter).
+/// Lets `c` mark the open plan day complete (plan readings only).
+pub const Completion = struct { state: *storage.State, path: []const u8, today: i32 };
+
 pub const Portion = struct { chapter: usize, end: usize, label: []const u8 };
 
 /// One rendered line: text is a slice of `full` (the block's display text),
@@ -342,7 +347,7 @@ fn openImage(io: std.Io, path: []const u8) !void {
     _ = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .pgid = if (@import("builtin").os.tag == .windows) null else 0 });
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities, start: ?Position, portion: ?Portion) !Exit {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []const u8, base: []const u8, library_dir: []const u8, caps: graphics.Capabilities, start: ?Position, portion: ?Portion, completion: ?Completion) !Exit {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -358,11 +363,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
     defer wrapping.deinit();
     var laid_width: usize = 0;
     var laid_chapter: usize = std.math.maxInt(usize);
-    var notice: []const u8 = if (portion) |p| try std.fmt.allocPrint(allocator, "Plan reading: {s} · read to the end-of-reading marker; m returns to the plan", .{p.label}) else "/ search · t chapters · H/L (Shift+←/→) chapters · m library · q quit";
+    var notice: []const u8 = if (portion) |p| try std.fmt.allocPrint(allocator, "Plan reading: {s} · read to the end-of-reading marker; c marks the day complete · m returns to the plan", .{p.label}) else "/ search · t chapters · H/L (Shift+←/→) chapters · m library · q quit";
     var redraw = true;
     var old: tui.Size = .{ .columns = 0, .rows = 0 };
     defer tui.setTextInput(false);
     var exit: Exit = .quit;
+    var confirm_complete = false;
     var images: inline_image.Renderer = .{
         .allocator = gpa,
         .io = io,
@@ -524,6 +530,20 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
         tui.setTextInput(finder.prompt);
         const key = try tui.readKey() orelse continue;
         redraw = true;
+        if (confirm_complete) {
+            confirm_complete = false;
+            notice = "Not marked complete.";
+            if (key == 'y') if (completion) |c| {
+                if (c.state.complete(c.today)) {
+                    storage.save(allocator, io, c.path, c.state.*) catch |err| {
+                        notice = try std.fmt.allocPrint(allocator, "Could not save progress: {s}.", .{@errorName(err)});
+                        continue;
+                    };
+                    notice = "Completed and saved. Next assignment tomorrow; m returns to the plan.";
+                } else |err| notice = if (err == error.AlreadyCompletedToday) "Already complete today. Your next assignment becomes available tomorrow." else try std.fmt.allocPrint(allocator, "Cannot complete: {s}.", .{@errorName(err)});
+            };
+            continue;
+        }
         if (finder.prompt) {
             switch (key) {
                 27 => finder.cancel(),
@@ -622,6 +642,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, doc: document.Document, file: []c
                 chapter = picked;
                 anchor_block = 0;
                 laid_chapter = std.math.maxInt(usize);
+            },
+            'c' => if (completion != null) {
+                confirm_complete = true;
+                notice = "Mark today's reading complete? y confirms · any other key cancels";
             },
             '/' => finder.begin(0),
             'r' => if (finder.open) {

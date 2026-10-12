@@ -33,14 +33,14 @@ with tempfile.TemporaryDirectory(prefix='kata-library-') as folder:
 
     send(b'', 'Search all books')
     # Library search: results from the Psalter, open one, come back to the list.
-    send(b'4\r', 'Search all books')
+    send(b'5\r', 'Search all books')
     send(b'mercy\r', 'passages in 1 book ')
     send(b'3\r', 'The First Kathisma')
     send(b'm', 'Search results')
     send(b'q', 'Bible ·')
     # Bible Psalm 3: e switches column 1 to the ingested Psalter (htm),
     # search then follows it; the choice holds on the next psalm; e returns.
-    send(b'1\r', 'Reading mode'); send(b'1\r', 'Choose book')
+    send(b'1\r', 'Free reading'); send(b'1\r', 'Choose book')
     send(b'19\r', 'Choose chapter'); send(b'3\r', 'starting verse'); send(b'0\r', 'Psalms:3')
     frame = send(b'e', 'htm · Psalms 3')
     assert b'O Lord, why are they multiplied' in frame

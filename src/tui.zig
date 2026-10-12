@@ -6,6 +6,7 @@ const catalog = @import("catalog.zig");
 const scheduling = @import("plan.zig");
 const input = @import("input.zig");
 const search = @import("search.zig");
+const theme = @import("theme.zig");
 var decoder: input.Decoder = .{};
 const backend = if (@import("builtin").os.tag == .windows) @import("terminal_windows.zig") else @import("terminal_posix.zig");
 pub const writeAll = backend.writeAll;
@@ -80,6 +81,8 @@ fn remember(lines: []const layout.Line, tops: [3]usize, state: *storage.State) v
 pub const Options = struct {
     title: []const u8,
     plan_mode: bool,
+    /// `c` may mark the plan day complete (always true in plan_mode; set for plan days opened from a hub).
+    completable: bool = false,
     today: i32,
     state_path: []const u8,
     io: std.Io,
@@ -137,7 +140,7 @@ fn renderPicker(allocator: std.mem.Allocator, w: *std.Io.Writer, picker: picking
         const capacity = height - 6;
         const first = @min(picker.selected -| (capacity / 2), count -| capacity);
         for (first..@min(count, first + capacity)) |index| {
-            try w.print("\x1b[{d};1H{s}", .{ index - first + 3, if (index == picker.selected) "\x1b[38;2;210;178;116m▶ " else "\x1b[38;2;224;215;191m  " });
+            try w.print("\x1b[{d};1H{s}", .{ index - first + 3, if (index == picker.selected) theme.accent ++ "▶ " else theme.ink ++ "  " });
             const label = if (is_plans)
                 try std.fmt.allocPrint(allocator, "{s} · {d} days{s}", .{ options.plans[index].plan.name(), options.plans[index].plan.totalDays(), if (index == options.active_plan) " · active" else "" })
             else
@@ -146,10 +149,10 @@ fn renderPicker(allocator: std.mem.Allocator, w: *std.Io.Writer, picker: picking
             try w.writeAll(clipped(label, columns - 2));
         }
     }
-    try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
+    try w.print("\x1b[{d};1H" ++ theme.accent, .{height - 1});
     const help = if (picker.kind == .confirm_day) "y confirms · any other key cancels confirmation · Esc/q returns" else if (is_plans) "j/k select · Enter open plan · Esc/q cancel · progress kept per plan" else "j/k select · type day number · Enter preview · Esc/q cancel";
     try w.writeAll(clipped(help, columns));
-    try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
+    try w.print("\x1b[{d};1H" ++ theme.dim, .{height});
     if (picker.digit_count > 0) try w.print("Go to day: {s}", .{picker.digits[0..picker.digit_count]}) else try w.writeAll(clipped(options.notice, columns));
 }
 
@@ -220,7 +223,7 @@ pub fn status(text: []const u8) !void {
     const size = backend.size() catch Size{ .columns = 80, .rows = 24 };
     var buffer: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buffer);
-    w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ") catch {};
+    w.writeAll("\x1b[H\x1b[2J" ++ theme.paper ++ theme.ink ++ " K A T A  |  ") catch {};
     w.writeAll(clipped(text, size.columns -| 14)) catch {};
     try writeAll(w.buffered());
 }
@@ -252,7 +255,7 @@ pub fn promptWith(allocator: std.mem.Allocator, title: []const u8, description: 
             var frame = std.Io.Writer.Allocating.init(allocator);
             defer frame.deinit();
             const w = &frame.writer;
-            try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ");
+            try w.writeAll("\x1b[H\x1b[2J" ++ theme.paper ++ theme.ink ++ " K A T A  |  ");
             try w.writeAll(clipped(title, size.columns -| 14));
             if (size.columns < 24 or size.rows < 10) {
                 try w.writeAll("\r\nEnlarge terminal. Esc cancels.");
@@ -261,7 +264,7 @@ pub fn promptWith(allocator: std.mem.Allocator, title: []const u8, description: 
                 defer wrapping.deinit();
                 const lines = layout.wrap(wrapping.allocator(), description, size.columns -| 2) catch &[_][]const u8{description};
                 for (lines[0..@min(lines.len, size.rows -| 7)], 0..) |line, i| {
-                    try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{i + 3});
+                    try w.print("\x1b[{d};1H" ++ theme.dim, .{i + 3});
                     try w.writeAll(clipped(line, size.columns));
                 }
                 const text = buffer[0..len];
@@ -272,13 +275,13 @@ pub fn promptWith(allocator: std.mem.Allocator, title: []const u8, description: 
                     while (start < text.len and (text[start] & 0xC0) == 0x80) start += 1;
                     break :blk text[start..];
                 } else text;
-                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m> \x1b[38;2;224;215;191m", .{@min(lines.len, size.rows -| 7) + 4});
+                try w.print("\x1b[{d};1H" ++ theme.accent ++ "> " ++ theme.ink, .{@min(lines.len, size.rows -| 7) + 4});
                 try w.writeAll(shown);
                 try w.writeAll("█");
-                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{size.rows - 1});
+                try w.print("\x1b[{d};1H" ++ theme.accent, .{size.rows - 1});
                 try w.writeAll(clipped(if (browsable) "Type or paste · Tab browses folders · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels" else "Type or paste · Enter accepts · Backspace deletes · Ctrl-u clears · Esc cancels", size.columns));
                 if (invalid) {
-                    try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{size.rows});
+                    try w.print("\x1b[{d};1H" ++ theme.dim, .{size.rows});
                     try w.writeAll(clipped("Enter some text first (it must be valid UTF-8).", size.columns));
                 }
             }
@@ -344,10 +347,55 @@ fn handlePicker(picker: *picking.Picker, key: u8, count: usize, redraw: *bool) ?
     return action;
 }
 
+pub const Choice = union(enum) { pick: usize, remove: usize };
+
+pub const ChooseOptions = struct {
+    /// Text each row is matched against by the `/` filter (default: the label).
+    haystack: ?[]const []const u8 = null,
+    /// The first N rows can be removed with `x` (after a y confirmation).
+    removable_rows: usize = 0,
+};
+
+/// True when every space-separated word of `filter` starts a word in `haystack`
+/// (case- and accent-insensitive, same matcher as in-book search).
+pub fn matchesFilter(haystack: []const u8, filter: []const u8) bool {
+    var tokens = std.mem.tokenizeScalar(u8, filter, ' ');
+    while (tokens.next()) |token| {
+        const query = search.Query.init(token);
+        if (query.empty()) continue;
+        if (search.next(haystack, &query, 0) == null) return false;
+    }
+    return true;
+}
+
+fn refilter(allocator: std.mem.Allocator, visible: *std.ArrayList(usize), labels: []const []const u8, haystack: ?[]const []const u8, filter: []const u8) !void {
+    visible.clearRetainingCapacity();
+    for (labels, 0..) |label, index| {
+        const text = if (haystack) |h| h[index] else label;
+        if (filter.len == 0 or matchesFilter(text, filter)) try visible.append(allocator, index);
+    }
+}
+
 /// Generic numbered menu, inside an already-owned application terminal.
 pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []const u8, labels: []const []const u8, initial: usize, number_base: usize) !?usize {
+    const picked = try chooseOpts(allocator, title, description, labels, initial, number_base, .{}) orelse return null;
+    return picked.pick;
+}
+
+/// As `choose`, with a vim-style `/` filter and optional `x` removal.
+/// Numbers shown and typed refer to positions in the (filtered) list; the
+/// returned index is always into `labels`.
+pub fn chooseOpts(allocator: std.mem.Allocator, title: []const u8, description: []const u8, labels: []const []const u8, initial: usize, number_base: usize, options: ChooseOptions) !?Choice {
     if (labels.len == 0) return error.EmptyMenu;
     var picker: picking.Picker = .{ .kind = .plans, .selected = @min(initial, labels.len - 1), .numeric = true, .number_base = number_base };
+    var filter_buf: [64]u8 = undefined;
+    var filter_len: usize = 0;
+    var filtering = false;
+    var confirming = false;
+    var visible: std.ArrayList(usize) = .empty;
+    defer visible.deinit(allocator);
+    try refilter(allocator, &visible, labels, options.haystack, "");
+    defer decoder.text = false;
     var redraw = true;
     var old_columns: usize = 0;
     var old_height: usize = 0;
@@ -360,23 +408,37 @@ pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []co
             var frame = std.Io.Writer.Allocating.init(allocator);
             defer frame.deinit();
             const w = &frame.writer;
-            try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m K A T A  |  ");
+            try w.writeAll("\x1b[H\x1b[2J" ++ theme.paper ++ theme.ink ++ " K A T A  |  ");
             try w.writeAll(clipped(title, columns -| 14));
             if (columns < 24 or height < 8) {
                 try w.writeAll("\r\nEnlarge terminal. Esc/q returns.");
             } else {
-                try w.writeAll("\x1b[2;1H\x1b[38;2;134;145;156m");
+                try w.writeAll("\x1b[2;1H" ++ theme.dim);
                 try w.writeAll(clipped(description, columns));
                 const capacity = height - 6;
-                const first = @min(picker.selected -| (capacity / 2), labels.len -| capacity);
-                for (first..@min(labels.len, first + capacity)) |index| {
-                    try w.print("\x1b[{d};1H{s}{d}. ", .{ index - first + 3, if (index == picker.selected) "\x1b[38;2;210;178;116m▶ " else "\x1b[38;2;224;215;191m  ", index + number_base });
-                    try w.writeAll(clipped(labels[index], columns -| 9));
+                const count = visible.items.len;
+                const first = @min(picker.selected -| (capacity / 2), count -| capacity);
+                for (first..@min(count, first + capacity)) |position| {
+                    try w.print("\x1b[{d};1H{s}{d}. ", .{ position - first + 3, if (position == picker.selected) theme.accent ++ "▶ " else theme.ink ++ "  ", position + number_base });
+                    try w.writeAll(clipped(labels[visible.items[position]], columns -| 9));
                 }
-                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
-                try w.writeAll(clipped("j/k select · type number · Enter opens · Esc/q back (or quit at Library)", columns));
-                try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
-                if (picker.digit_count > 0) try w.print("Selection: {s}", .{picker.digits[0..picker.digit_count]});
+                if (count == 0) try w.writeAll("\x1b[3;1H" ++ theme.dim ++ "  No matches.");
+                try w.print("\x1b[{d};1H" ++ theme.accent, .{height - 1});
+                if (confirming) {
+                    var ask: [160]u8 = undefined;
+                    const text = std.fmt.bufPrint(&ask, "Remove \"{s}\"? y confirms · any other key cancels", .{labels[visible.items[picker.selected]]}) catch "Remove this entry? y confirms";
+                    try w.writeAll(clipped(text, columns));
+                } else if (filtering) {
+                    try w.writeAll(clipped("Type to filter · Enter keeps the filter · Esc clears · Backspace deletes", columns));
+                } else {
+                    try w.writeAll(clipped(if (options.removable_rows > 0) "j/k select · number · Enter opens · / filter · x remove · Esc/q back" else "j/k select · type number · Enter opens · / filter · Esc/q back (or quit at Library)", columns));
+                }
+                try w.print("\x1b[{d};1H" ++ theme.dim, .{height});
+                if (filtering) {
+                    try w.print("/{s}█", .{clipped(filter_buf[0..filter_len], columns -| 3)});
+                } else if (filter_len > 0) {
+                    try w.print("Filter: {s} · {d} of {d} shown · Esc clears", .{ clipped(filter_buf[0..filter_len], columns -| 40), count, labels.len });
+                } else if (picker.digit_count > 0) try w.print("Selection: {s}", .{picker.digits[0..picker.digit_count]});
             }
             try writeAll(frame.written());
             old_columns = columns;
@@ -384,14 +446,85 @@ pub fn choose(allocator: std.mem.Allocator, title: []const u8, description: []co
             redraw = false;
         }
         const key = try readKey() orelse continue;
-        if (handlePicker(&picker, key, labels.len, &redraw)) |action| return action.choose_plan;
+        redraw = true;
+        if (confirming) {
+            confirming = false;
+            if (key == 'y') return .{ .remove = visible.items[picker.selected] };
+            continue;
+        }
+        if (filtering) {
+            switch (key) {
+                10, 13 => {
+                    filtering = false;
+                    decoder.text = false;
+                },
+                27 => {
+                    filter_len = 0;
+                    filtering = false;
+                    decoder.text = false;
+                    try refilter(allocator, &visible, labels, options.haystack, "");
+                    picker.selected = 0;
+                },
+                127, 8 => {
+                    if (filter_len == 0) {
+                        filtering = false;
+                        decoder.text = false;
+                    } else {
+                        filter_len -= 1;
+                        while (filter_len > 0 and (filter_buf[filter_len] & 0xC0) == 0x80) filter_len -= 1;
+                        try refilter(allocator, &visible, labels, options.haystack, filter_buf[0..filter_len]);
+                        picker.selected = 0;
+                    }
+                },
+                21 => {
+                    filter_len = 0;
+                    try refilter(allocator, &visible, labels, options.haystack, "");
+                    picker.selected = 0;
+                },
+                else => if (key >= 0x20 and key != 0x7f and filter_len < filter_buf.len) {
+                    filter_buf[filter_len] = key;
+                    filter_len += 1;
+                    try refilter(allocator, &visible, labels, options.haystack, filter_buf[0..filter_len]);
+                    picker.selected = 0;
+                },
+            }
+            continue;
+        }
+        if (key == '/') {
+            filtering = true;
+            decoder.text = true;
+            picker.digit_count = 0;
+            continue;
+        }
+        if ((key == 27 or key == 'q') and filter_len > 0) {
+            // Clear the filter first, keeping the highlighted row highlighted.
+            const kept = if (picker.selected < visible.items.len) visible.items[picker.selected] else 0;
+            filter_len = 0;
+            try refilter(allocator, &visible, labels, options.haystack, "");
+            picker.selected = @min(kept, visible.items.len -| 1);
+            continue;
+        }
+        if (key == 'x' and options.removable_rows > 0) {
+            if (picker.selected < visible.items.len and visible.items[picker.selected] < options.removable_rows) confirming = true;
+            continue;
+        }
+        if (handlePicker(&picker, key, visible.items.len, &redraw)) |action| return .{ .pick = visible.items[action.choose_plan] };
         if (picker.kind == .closed) return null;
     }
     return null;
 }
 
-const mark_on = "\x1b[48;2;210;178;116m\x1b[38;2;21;25;34m";
-const mark_off = "\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m";
+test "menu filter matches words by prefix, any order, accent-insensitively" {
+    try std.testing.expect(matchesFilter("Building Microservices · Sam Newman", "micro"));
+    try std.testing.expect(matchesFilter("Building Microservices · Sam Newman", "newman build"));
+    try std.testing.expect(!matchesFilter("Building Microservices · Sam Newman", "services"));
+    try std.testing.expect(matchesFilter("Élan Vital · Bergson", "elan"));
+    try std.testing.expect(matchesFilter("anything", ""));
+    try std.testing.expect(!matchesFilter("", "x"));
+}
+
+const mark_on = theme.accent_bg ++ theme.on_accent;
+const mark_off = theme.paper ++ theme.ink;
 
 /// Writes full[from..to], highlighting query matches found from `search_from`.
 fn writeMarked(w: *std.Io.Writer, full: []const u8, from: usize, to: usize, query: *const search.Query, search_from: usize) !void {
@@ -446,20 +579,20 @@ fn renderPanel(allocator: std.mem.Allocator, w: *std.Io.Writer, finder: *const s
     var row = top;
     const header = try std.fmt.allocPrint(allocator, "Search {s} · “{s}”", .{ tool, finder.submittedText() });
     defer allocator.free(header);
-    try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ {s}", .{ row, x, if (finder.focus) "\x1b[1m\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m" });
+    try w.print("\x1b[{d};{d}H" ++ theme.rule ++ "┃ {s}", .{ row, x, if (finder.focus) "\x1b[1m" ++ theme.accent else theme.dim });
     try cell(w, header, inner);
-    try w.writeAll("\x1b[0m\x1b[48;2;21;25;34m");
+    try w.writeAll("\x1b[0m" ++ theme.paper);
     row += 1;
     const summary = try std.fmt.allocPrint(allocator, "{d} verses · {d} matches · {d}/{d}", .{ finder.hits.len, finder.occurrences, if (finder.hits.len == 0) 0 else finder.selected + 1, finder.hits.len });
     defer allocator.free(summary);
-    try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ \x1b[38;2;134;145;156m", .{ row, x });
+    try w.print("\x1b[{d};{d}H" ++ theme.rule ++ "┃ " ++ theme.dim, .{ row, x });
     try cell(w, summary, inner);
     row += 1;
     const capacity = (bottom + 1) -| row;
     if (capacity == 0) return;
     const first = @min(finder.selected -| (capacity / 2), finder.hits.len -| capacity);
     for (0..capacity) |offset| {
-        try w.print("\x1b[{d};{d}H\x1b[38;2;74;87;101m┃ ", .{ row + offset, x });
+        try w.print("\x1b[{d};{d}H" ++ theme.rule ++ "┃ ", .{ row + offset, x });
         const index = first + offset;
         if (index >= finder.hits.len) {
             try cell(w, "", inner);
@@ -473,11 +606,11 @@ fn renderPanel(allocator: std.mem.Allocator, w: *std.Io.Writer, finder: *const s
         else
             try std.fmt.allocPrint(allocator, "{s}{s} {d}:{d} ", .{ if (chosen) "▶ " else "  ", hit.book(), hit.chapter, hit.number });
         defer allocator.free(place);
-        try w.writeAll(if (chosen) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
+        try w.writeAll(if (chosen) theme.accent else theme.dim);
         const place_visible = clipped(place, inner);
         try w.writeAll(place_visible);
         var used = layout.displayWidth(place_visible);
-        try w.writeAll("\x1b[38;2;224;215;191m");
+        try w.writeAll(theme.ink);
         // Show a little context before the first match, from a word start.
         var from: usize = 0;
         if (hit.match.start > 24) {
@@ -562,7 +695,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             var frame = std.Io.Writer.Allocating.init(allocator);
             defer frame.deinit();
             const w = &frame.writer;
-            try w.writeAll("\x1b[H\x1b[2J\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m");
+            try w.writeAll("\x1b[H\x1b[2J" ++ theme.paper ++ theme.ink);
             const prompting = if (finder) |f| f.prompt else false;
             const panel_focus = if (finder) |f| f.open and f.focus else false;
             if (picker.kind != .closed) {
@@ -572,11 +705,11 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
             } else if (rows.len == 0) {
                 try w.writeAll(" K A T A  |  Plan complete. m opens Library; p chooses a plan; d restarts at a day; q quits.");
             } else {
-                try w.writeAll("\x1b[1;1H\x1b[1m\x1b[38;2;210;178;116m K A T A  \x1b[0m\x1b[48;2;21;25;34m\x1b[38;2;224;215;191m");
+                try w.writeAll("\x1b[1;1H\x1b[1m" ++ theme.accent ++ " K A T A  \x1b[0m" ++ theme.paper ++ theme.ink);
                 const title = try std.fmt.allocPrint(allocator, "{s}  [{s}]{s}", .{ options.title, if (state.linked) "LINKED" else "INDEPENDENT", if (options.plan_mode) "" else " [FREE]" });
                 defer allocator.free(title);
                 try w.writeAll(clipped(title, columns -| 12));
-                try w.writeAll("\x1b[2;1H\x1b[38;2;134;145;156m");
+                try w.writeAll("\x1b[2;1H" ++ theme.dim);
                 try w.writeAll(clipped(notice, columns));
                 const highlight = if (finder) |f| f.highlight() else null;
                 if (reader_visible) {
@@ -587,7 +720,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                         const row = rows[row_index];
                         const label = try std.fmt.allocPrint(allocator, "{s}{s} · {s} {d}", .{ if (state.focus == pane) "▶ " else "  ", options.names[pane], row.book, row.label(pane).chapter });
                         defer allocator.free(label);
-                        try w.writeAll(if (state.focus == pane and !panel_focus) "\x1b[38;2;210;178;116m" else "\x1b[38;2;134;145;156m");
+                        try w.writeAll(if (state.focus == pane and !panel_focus) theme.accent else theme.dim);
                         try cell(w, label, pane_width);
                         try w.writeAll(" │ ");
                     }
@@ -595,16 +728,16 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                         try w.print("\x1b[{d};1H", .{line_index + 4});
                         for (0..3) |pane| {
                             if (!state.enabled[pane]) continue;
-                            try w.writeAll("\x1b[38;2;224;215;191m");
+                            try w.writeAll(theme.ink);
                             const at = tops[pane] + line_index;
                             const query = if (highlight) |h| (if (h.pane == pane) h.query else null) else null;
                             if (at < lines.len) try markedCell(w, lines[at], pane, query, pane_width) else try cell(w, "", pane_width);
-                            try w.writeAll("\x1b[38;2;74;87;101m │ ");
+                            try w.writeAll(theme.rule ++ " │ ");
                         }
                     }
                 }
                 if (panel_open) try renderPanel(allocator, w, finder.?, columns - panel_width + 1, panel_width, 3, height - 2);
-                try w.print("\x1b[{d};1H\x1b[38;2;210;178;116m", .{height - 1});
+                try w.print("\x1b[{d};1H" ++ theme.accent, .{height - 1});
                 const help = if (confirm)
                     "Mark today's assignment complete? y confirms · any other key cancels"
                 else if (prompting)
@@ -616,14 +749,14 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 else
                     "j/k or ↑/↓ scroll · Ctrl-d/u page · h/l or ←/→ focus · s sync · 1/2/3 panes · g/G ends · / search · e edition";
                 try w.writeAll(clipped(help, columns));
-                try w.print("\x1b[{d};1H\x1b[38;2;134;145;156m", .{height});
+                try w.print("\x1b[{d};1H" ++ theme.dim, .{height});
                 if (prompting) {
                     const f = finder.?;
                     const line = try std.fmt.allocPrint(allocator, "/{s}█   searching {s}", .{ f.promptText(), f.names[f.prompt_pane] });
                     defer allocator.free(line);
-                    try w.writeAll("\x1b[38;2;224;215;191m");
+                    try w.writeAll(theme.ink);
                     try w.writeAll(clipped(line, columns));
-                } else try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else "m library · o choose place · H/L (Shift+←/→) previous/next chapter · p plans · q quit", columns));
+                } else try w.writeAll(clipped(if (options.plan_mode) "m library · o free reading · p plans · d choose day · c complete day · q quit" else if (options.completable) "m plan · c complete day · q quit" else "m library · o choose place · H/L (Shift+←/→) previous/next chapter · p plans · q quit", columns));
             }
             try writeAll(frame.written());
             redraw = false;
@@ -773,7 +906,7 @@ pub fn runInTerminal(allocator: std.mem.Allocator, rows: []const layout.Row, sta
                 if (!state.enabled[state.focus]) moveFocus(state, 1);
                 old_width = 0;
             },
-            'c' => if (options.plan_mode) {
+            'c' => if (options.plan_mode or options.completable) {
                 if (rows.len == 0) notice = "Plan complete. Choose a plan or restart at a day." else confirm = true;
             },
             'p' => if (options.plans.len > 0) {

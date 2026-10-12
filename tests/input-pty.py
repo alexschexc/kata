@@ -97,9 +97,7 @@ with tempfile.TemporaryDirectory(prefix='kata-input-') as folder:
         ui.inert(READER_NOISE)
         ui.send(b'9'*100 + b'\r', 'Selection:')
         ui.drain(); assert b'Invalid selection' not in ui.data
-        ui.send(b'\x7f'*20 + b'1\r', 'Reading mode')
-        ui.inert(READER_NOISE)
-        ui.send(b'j\r', 'Choose plan')
+        ui.send(b'\x7f'*20 + b'2\r', 'Reading plans')
         ui.inert(READER_NOISE)
         ui.send(b'\r', 'Optina · day 1/89')
         ui.send(b'd', 'Choose plan day')

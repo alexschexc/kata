@@ -105,16 +105,16 @@ fn loadBook(io: std.Io, shelf: *Shelf, index: usize) !document.Document {
 
 /// Reads library book `index` (at `start_at`, else the saved position).
 fn openBook(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities) !BookResult {
-    return openBookAt(allocator, io, shelf, index, base, caps, null, null);
+    return openBookAt(allocator, io, shelf, index, base, caps, null, null, null);
 }
 
-fn openBookAt(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, start_at: ?book_reader.Position, portion: ?book_reader.Portion) !BookResult {
+fn openBookAt(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, index: usize, base: []const u8, caps: @import("graphics.zig").Capabilities, start_at: ?book_reader.Position, completion: ?book_reader.Completion, portion: ?book_reader.Portion) !BookResult {
     const entry = shelf.entries[index];
     const doc = loadBook(io, shelf, index) catch |err| {
         return .{ .exit = .home, .notice = try std.fmt.allocPrint(allocator, "Cannot open {s}: {s}. Re-run ingest.", .{ entry.title, @errorName(err) }) };
     };
     const position = start_at;
-    return .{ .exit = try book_reader.run(std.heap.page_allocator, io, doc, entry.file, base, shelf.folders.library, caps, position, portion) };
+    return .{ .exit = try book_reader.run(std.heap.page_allocator, io, doc, entry.file, base, shelf.folders.library, caps, position, portion, completion) };
 }
 
 /// Library-wide search: one query over every converted book, results in a
@@ -157,7 +157,7 @@ fn searchBooks(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, base: []
     while (!tui.isInterrupted()) {
         selected = try tui.choose(allocator, "Search results", description, labels.items, selected, 1) orelse return .{ .exit = .home };
         const hit = found.items[selected];
-        const result = try openBookAt(allocator, io, shelf, hit.book, base, caps, hit.position, null);
+        const result = try openBookAt(allocator, io, shelf, hit.book, base, caps, hit.position, null, null);
         if (result.exit == .quit) return result;
     }
     return .{ .exit = .home };
@@ -289,7 +289,7 @@ fn planHub(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, entry: catal
         if (choice < items.len) {
             const item = items[choice];
             if (item.book) |index| {
-                const result = try openBookAt(allocator, io, shelf, index, base, caps, item.start, item.portion);
+                const result = try openBookAt(allocator, io, shelf, index, base, caps, item.start, .{ .state = &state, .path = path, .today = date }, item.portion);
                 if (result.exit == .quit) return .quit;
                 if (result.notice) |n| note = try std.fmt.allocPrint(allocator, "{s} ", .{n});
             } else if (item.references.len > 0) {
@@ -306,6 +306,7 @@ fn planHub(allocator: std.mem.Allocator, io: std.Io, shelf: *Shelf, entry: catal
                 const action = try tui.runInTerminal(work, rows.items, &state, .{
                     .title = try std.fmt.allocPrint(work, "{s} · day {d}/{d}", .{ plan.name(), ordinal % days + 1, days }),
                     .plan_mode = false,
+                    .completable = true,
                     .today = date,
                     .state_path = path,
                     .io = io,
@@ -554,6 +555,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
     const config_home = try paths.root(allocator, init.environ_map, @import("builtin").os.tag == .windows, .config);
     const user_plans = try std.fs.path.join(allocator, &.{ config_home, "kata", "plans" });
     try plans.discover(init.io, user_plans);
+    catalog.dropHidden(&plans, try catalog.loadHidden(allocator, init.io, base));
     var selected: usize = 0;
     var notice: []const u8 = "Verse-label alignment; numbering variants are not yet mapped.";
     if (explicit_plan) |path| {
@@ -658,6 +660,51 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
                 const result = try openBook(allocator, init.io, &shelf, index, base, graphics_caps);
                 if (result.exit == .quit) return;
                 notice = result.notice orelse "Library";
+                continue;
+            },
+            .plans => {
+                active = null;
+                var plans_note: []const u8 = "Pick a plan to read, build a new one, or press x to remove one you no longer want.";
+                while (!tui.isInterrupted()) {
+                    var labels: std.ArrayList([]const u8) = .empty;
+                    for (plans.entries.items, 0..) |entry, i| try labels.append(allocator, try std.fmt.allocPrint(allocator, "{s} · {d} days · {s}{s}", .{ entry.plan.name(), entry.plan.totalDays(), try start.coverage(allocator, entry.plan), if (i == selected) " · selected" else "" }));
+                    try labels.append(allocator, "＋ Build a new plan · choose books, length, and parallel streams");
+                    const pick = try tui.chooseOpts(allocator, "Reading plans", plans_note, labels.items, @min(selected, labels.items.len - 1), 1, .{ .removable_rows = plans.entries.items.len }) orelse break;
+                    switch (pick) {
+                        .pick => |index| {
+                            active = if (index == plans.entries.items.len) .build_plan else .{ .plan = index };
+                            break;
+                        },
+                        .remove => |index| {
+                            const entry = plans.entries.items[index];
+                            if (plans.entries.items.len <= 1) {
+                                plans_note = "Keep at least one plan; build another before removing this one.";
+                                continue;
+                            }
+                            const prefix = try std.fmt.allocPrint(allocator, "{s}{c}", .{ user_plans, std.fs.path.sep });
+                            const name = try allocator.dupe(u8, entry.plan.name());
+                            if (std.mem.startsWith(u8, entry.id, prefix)) {
+                                // Plans you built or added live in your config folder: delete the file.
+                                std.Io.Dir.cwd().deleteFile(init.io, entry.id) catch |err| {
+                                    plans_note = try std.fmt.allocPrint(allocator, "Could not remove the plan file: {s}.", .{@errorName(err)});
+                                    continue;
+                                };
+                            } else {
+                                // Built-in and project-folder plans have no file of ours to delete: hide them.
+                                catalog.hide(allocator, init.io, base, entry.id) catch |err| {
+                                    plans_note = try std.fmt.allocPrint(allocator, "Could not hide the plan: {s}.", .{@errorName(err)});
+                                    continue;
+                                };
+                            }
+                            plans_note = try std.fmt.allocPrint(allocator, "Removed \"{s}\". Saved progress for it was kept.", .{name});
+                            plans.remove(index);
+                            if (selected == index) {
+                                selected = 0;
+                                try catalog.saveSelected(allocator, init.io, base, plans.entries.items[0].id);
+                            } else if (selected > index) selected -= 1;
+                        },
+                    }
+                }
                 continue;
             },
             .build_plan => {
@@ -795,7 +842,7 @@ pub fn run(init: std.process.Init, optina: []const u8, gospels: []const u8, base
         switch (target) {
             .plan => |index| target_plan = index,
             .free => |at| target_free = at,
-            .book, .folders, .search_books, .build_plan => unreachable, // only chosen from the Library menu
+            .book, .folders, .search_books, .build_plan, .plans => unreachable, // only chosen from the Library menu
         }
         const target_entry = plans.entries.items[target_plan];
         if (target_free == null and changed_day == null and hasLibrary(target_entry)) {

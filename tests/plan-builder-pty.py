@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='kata-planbuild-') as folder:
         return bytes(data[start:])
 
     send(b'', 'Library')
-    send(b'1\r', 'Reading mode'); send(b'2\r', 'Choose plan')
+    send(b'2\r', 'Reading plans')
     send(b'3\r', 'Name the plan')                       # 2 built-in plans, then ＋ Build
     send(b'Gospels and Psalms\r', 'Add Bible books')
     send(b'1\r', 'Matthew'); send(b'\x1b', 'Stream 1')  # preset: Gospels

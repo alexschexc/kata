@@ -11,8 +11,7 @@ class UI:
         self.p = subprocess.Popen([str(BIN), '--state', str(state)], cwd=cwd, env=env, stdin=self.slave, stdout=self.slave, stderr=self.slave, start_new_session=True)
         self.data = bytearray()
         self.expect('Library')
-        self.send(b'\r', 'Reading mode')
-        self.send(b'j\r', 'Choose plan')
+        self.send(b'j\r', 'Reading plans')
         offset = len(self.data)
         os.write(self.master, b'\r')
         deadline = time.monotonic() + 15

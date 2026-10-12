@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
 SAMPLES = ['The Psalter According to the Seventy - Holy Transfiguration Monastery (1).epub',
            'buildingmicroservices2ndedition.epub']
-MARK = b'\x1b[48;2;210;178;116m\x1b[38;2;21;25;34m'
+MARK = b'\x1b[48;2;125;130;217m\x1b[38;2;6;11;30m'
 
 
 class Screen:
@@ -89,10 +89,10 @@ with tempfile.TemporaryDirectory(prefix='kata-ingest-') as folder:
         assert (home / 'kataLibrary' / SAMPLES[0][:-5]).is_file() and (home / 'kataLibrary' / SAMPLES[1][:-5]).is_file()
 
         # Psalter: chapter picker → The Second Kathisma; verse gutter and page rule.
-        ui.send(b'2\r', 'Read · resume'); ui.send(b'1\r', 'The Psalter According to the Seventy · cover')
+        ui.send(b'3\r', 'Read · resume'); ui.send(b'1\r', 'The Psalter According to the Seventy · cover')
         f = ui.send(b't', 'Choose chapter')
         f = ui.send(b'8\r', 'The Second Kathisma  (8/33)')
-        assert '    1 \x1b[38;2;74;87;101m│ ' in text(f), 'verse number gutter'
+        assert '    1 \x1b[38;2;73;86;134m│ ' in text(f), 'verse number gutter'
         ui.send(b'\x1b[1;2C', 'The Third Kathisma  (9/33)')   # Shift+Right
         ui.send(b'H', 'The Second Kathisma  (8/33)')           # H
         f = ui.send(b'\x1b[B', 'line 2/')                      # Down arrow scrolls
@@ -109,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix='kata-ingest-') as folder:
         f = ui.send(b'm', 'Library')
 
         # Building Microservices: code keeps indentation; reopen restores position.
-        ui.send(b'3\r', 'Read · resume'); ui.send(b'1\r', 'Building Microservices · cover')
+        ui.send(b'4\r', 'Read · resume'); ui.send(b'1\r', 'Building Microservices · cover')
         f = ui.send(b'/eurToGbp\r', 'passages contain')
         f = ui.send(b'\r', ' = new Promise((resolve, reject)')
         assert '    //code to fetch latest exchange rate' in text(f), text(f)[-3000:]
@@ -126,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix='kata-ingest-') as folder:
         opened = (tmp / 'opened.txt').read_text().split()
         assert opened and opened[0].endswith('.png') and '.assets/' in opened[0] and Path(opened[0]).read_bytes()[:4] == b'\x89PNG', opened
         ui.send(b'm', 'Library')
-        ui.send(b'3\r', 'Read · resume'); f = ui.send(b'1\r', 'Chapter 4. Microservice Communication Styles')
+        ui.send(b'4\r', 'Read · resume'); f = ui.send(b'1\r', 'Chapter 4. Microservice Communication Styles')
         ui.send(b'q', '\x1b[?1049l')
         ui.p.wait(timeout=10)
         assert ui.p.returncode == 0

@@ -24,6 +24,7 @@ pub const sixel = @import("sixel.zig");
 pub const jpeg = @import("jpeg.zig");
 pub const plan_builder = @import("plan_builder.zig");
 pub const reading_units = @import("reading_units.zig");
+pub const theme = @import("theme.zig");
 pub const inline_image = @import("inline_image.zig");
 
 test {

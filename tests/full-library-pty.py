@@ -62,8 +62,7 @@ with tempfile.TemporaryDirectory(prefix='kata-full-library-') as folder:
         ui.expect('Library')
         ui.expect('Bible')
         assert b'New Testament' not in ui.data
-        ui.send(b'1\r', 'Reading mode')
-        ui.send(b'\r', 'Choose book')
+        ui.send(b'1\r', 'Free reading'); ui.send(b'1\r', 'Choose book')
         ui.send(b'1\r', 'Choose chapter')
         ui.send(b'1\r', 'Choose starting verse')
         ui.send(b'1\r', 'Genesis:1 · free reading')
@@ -72,8 +71,7 @@ with tempfile.TemporaryDirectory(prefix='kata-full-library-') as folder:
         ui.send(b'\x1b[1;2D', 'Genesis:1 · free reading')
         ui.send(b'm', 'Library')
         assert state.read_bytes() == original
-        ui.send(b'\r', 'Reading mode')
-        ui.send(b'j\r', 'Choose plan')
+        ui.send(b'2\r', 'Reading plans')
         ui.send(b'\r', 'Optina · day 88/89')
         ui.send(b'm', 'Library')
         after_plan = state.read_bytes()
@@ -88,8 +86,7 @@ with tempfile.TemporaryDirectory(prefix='kata-full-library-') as folder:
     ui = UI(state, env)
     try:
         ui.expect('Library')
-        ui.send(b'\r', 'Reading mode')
-        ui.send(b'\r', 'Choose book')
+        ui.send(b'\r', 'Free reading'); ui.send(b'\r', 'Choose book')
         ui.send(b'\r', 'Choose chapter')
         ui.send(b'\r', 'Choose starting verse')
         ui.send(b'0\r', 'Genesis:1 · free reading')

@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='kata-bookplan-') as folder:
         return bytes(data[start:])
 
     menu = send(b'', 'Search all books')
-    psalter_row = b'2' if menu.find(b'The Psalter') < menu.find(b'Building Microservices') else b'3'
+    psalter_row = b'3' if menu.find(b'The Psalter') < menu.find(b'Building Microservices') else b'4'
     # Psalter: book menu → build → defaults to stases, 60 days.
     send(psalter_row + b'\r', 'Build a reading plan for this book')
     send(b'2\r', 'Name the plan')
@@ -42,14 +42,17 @@ with tempfile.TemporaryDirectory(prefix='kata-bookplan-') as folder:
     send(b'1\r', 'Day 1/60')
     send(b'1\r', 'Stasis 1')
     frame = send(b'\x04\x04\x04', "end of today's reading")
-    send(b'm', 'Mark today')
-    send(b'2\r', 'Completed and saved')
+    # c inside the book marks the day complete (any other key cancels first).
+    send(b'c', "Mark today's reading complete?"); send(b'n', 'Not marked complete')
+    send(b'c', "Mark today's reading complete?"); send(b'y', 'Completed and saved')
+    send(b'c', "Mark today's reading complete?"); send(b'y', 'Already complete today')
+    send(b'm', 'Completed today')
     send(b'4\r', 'Search all books')
     # The book menu now lists the plan.
     send(psalter_row + b'\r', 'Reading plan · The Psalter')
     send(b'\x1b', 'Search all books')
     # Mixed plan: Gospels stream + Building Microservices by section.
-    send(b'1\r', 'Reading mode'); send(b'2\r', 'Choose plan')
+    send(b'2\r', 'Reading plans')
     send(b'4\r', 'Name the plan')   # optina, gospels, the new Psalter plan, then ＋ Build
     send(b'Gospels and microservices\r', 'Add Bible books')
     send(b'1\r', 'Matthew'); send(b'\x1b', 'Stream 1'); send(b'\x1b', 'Build reading plan')
@@ -68,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='kata-bookplan-') as folder:
     send(b'm', 'Day 1/159')
     send(b'2\r', 'Plan reading: Chapter 1. What Are Microservices?')
     send(b'm', 'Day 1/159')
-    send(b'5\r', 'Search all books')   # Back to Library (2 items + 3 actions)
+    send(b'\x1b', 'Search all books')   # Back to Library
     os.write(m, b'q')
     end = time.monotonic() + 5
     while time.monotonic() < end and os.waitpid(pid, os.WNOHANG) == (0, 0):
