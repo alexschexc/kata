@@ -9,7 +9,59 @@ const search = @import("search.zig");
 const theme = @import("theme.zig");
 var decoder: input.Decoder = .{};
 const backend = if (@import("builtin").os.tag == .windows) @import("terminal_windows.zig") else @import("terminal_posix.zig");
-pub const writeAll = backend.writeAll;
+
+/// True when the terminal cannot show 24-bit colour (macOS Terminal.app), so
+/// theme escapes are rewritten to the 256-colour palette on output.
+var colors_256 = false;
+
+/// Picks the colour depth. KATA_COLORS=256|truecolor overrides detection;
+/// otherwise Apple Terminal without COLORTERM=truecolor/24bit gets 256 colours.
+fn detectColorDepth() void {
+    if (@import("builtin").os.tag == .windows) return;
+    const c = @cImport(@cInclude("stdlib.h"));
+    const env = struct {
+        fn get(name: [*:0]const u8) ?[]const u8 {
+            const p = c.getenv(name) orelse return null;
+            return std.mem.span(p);
+        }
+    };
+    if (env.get("KATA_COLORS")) |v| {
+        if (std.mem.eql(u8, v, "256")) colors_256 = true;
+        if (std.mem.eql(u8, v, "truecolor")) colors_256 = false;
+        if (std.mem.eql(u8, v, "256") or std.mem.eql(u8, v, "truecolor")) return;
+    }
+    if (env.get("COLORTERM")) |v| {
+        if (std.mem.eql(u8, v, "truecolor") or std.mem.eql(u8, v, "24bit")) return;
+    }
+    if (env.get("TERM_PROGRAM")) |v| colors_256 = std.mem.eql(u8, v, "Apple_Terminal");
+}
+
+const ChunkSink = struct {
+    buf: [16384]u8 = undefined,
+    len: usize = 0,
+    pub fn write(self: *ChunkSink, bytes: []const u8) !void {
+        var rest = bytes;
+        while (rest.len > 0) {
+            if (self.len == self.buf.len) try self.flush();
+            const n = @min(rest.len, self.buf.len - self.len);
+            @memcpy(self.buf[self.len..][0..n], rest[0..n]);
+            self.len += n;
+            rest = rest[n..];
+        }
+    }
+    fn flush(self: *ChunkSink) !void {
+        if (self.len == 0) return;
+        try backend.writeAll(self.buf[0..self.len]);
+        self.len = 0;
+    }
+};
+
+pub fn writeAll(bytes: []const u8) !void {
+    if (!colors_256) return backend.writeAll(bytes);
+    var sink: ChunkSink = .{};
+    try theme.downsample(bytes, &sink);
+    try sink.flush();
+}
 
 pub fn clipped(text: []const u8, width: usize) []const u8 {
     var end: usize = 0;
@@ -162,6 +214,7 @@ pub const Terminal = struct {
         var native = try backend.Terminal.init();
         errdefer native.deinit();
         decoder = .{};
+        detectColorDepth();
         errdefer writeAll("\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
         try writeAll("\x1b[?1049h\x1b[?25l\x1b[?2004h");
         return .{ .native = native };

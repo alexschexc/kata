@@ -2,7 +2,7 @@
 
 Kata is a terminal reader written in Zig. It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
 
-Status: beta (v0.3). Linux is the tested platform. The macOS (Apple silicon) and Windows (x64) builds are cross-compiled and have not been verified on real machines.
+Status: beta (v0.3.1). Linux is the tested platform. The macOS (Apple silicon) and Windows (x64) builds are cross-compiled and have not been verified on real machines.
 
 ## What it does
 
@@ -14,6 +14,7 @@ Status: beta (v0.3). Linux is the tested platform. The macOS (Apple silicon) and
 - **Menu filter.** In any menu, such as the Library, `/` filters the list as you type. On the Library it matches title and author.
 - **Search.** `/` searches the focused translation, or the open book, with highlighted matches and a results panel. Library → "Search all books" searches every converted book.
 - **Inline images.** Book figures display with the Kitty graphics protocol or Sixel when the terminal supports them; otherwise a placeholder is shown, and `i` opens the image in your system viewer. `KATA_IMAGES=off` disables the terminal query.
+- **Colour.** Kata uses 24-bit colour. macOS Terminal.app does not support it, so Kata detects it (`TERM_PROGRAM=Apple_Terminal`) and switches to the 256-colour palette. `KATA_COLORS=256` or `KATA_COLORS=truecolor` forces either mode.
 - **Psalter edition switch.** In the Psalms, `e` swaps column 1 between the KJV and an ingested Psalter (the first Library title containing "psalter"). The two editions divide verses differently in many psalms, so verses can drift within a psalm; there is no per-psalm verse map yet.
 
 ## Install and run
@@ -21,7 +22,7 @@ Status: beta (v0.3). Linux is the tested platform. The macOS (Apple silicon) and
 Download the build for your system from the GitLab release page.
 
 - **Linux (x86-64):** the static `kata` binary. Put it on your `PATH` and run `kata`.
-- **macOS (Apple silicon):** unpack `kata-v0.3-macos-aarch64.tar.gz` and double-click `Run kata.command`. The binary is not Developer ID signed or notarized, so macOS download policies may block it until you allow it; this has not been tested on a Mac.
+- **macOS (Apple silicon):** unpack `kata-v0.3.1-macos-aarch64.tar.gz` and double-click `Run kata.command`. The binary is not Developer ID signed or notarized, so macOS download policies may block it until you allow it; this has not been tested on a Mac.
 - **Windows (x64):** run `kata.exe` in a terminal.
 
 From source (Zig 0.16.0, pinned in `mise.toml`):
