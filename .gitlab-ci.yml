@@ -107,7 +107,7 @@ rust-build:
   - curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz
   - echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
   - tar -xJf /tmp/zig.tar.xz -C /opt && export PATH=/opt/zig-x86_64-linux-$ZIG_VERSION:$CARGO_HOME/bin:$PATH
-  - cargo install cargo-zigbuild --version $CARGO_ZIGBUILD_VERSION --locked
+  - command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --version $CARGO_ZIGBUILD_VERSION --locked
   script:
   - scripts/rust-cross-build.sh
   artifacts:
