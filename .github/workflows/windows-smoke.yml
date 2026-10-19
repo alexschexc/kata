@@ -1,0 +1,29 @@
+# Native Windows x64 verification of the Rust port (KAT-23). GitLab's free compute minutes are
+# exhausted, so Windows runs here; GitLab remains the primary home of the repository.
+name: windows-smoke
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  rust-windows-x64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        working-directory: rust
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build
+        working-directory: rust
+        run: cargo build --release --locked
+      - name: Test
+        working-directory: rust
+        run: cargo test --locked
+      - name: Smoke test
+        run: python tests/target-smoke.py "$GITHUB_WORKSPACE/rust/target/release/kata.exe"
+      - name: No HOME set (PACKAGING.md Windows check)
+        run: |
+          env -u HOME -u XDG_STATE_HOME -u XDG_CONFIG_HOME "$GITHUB_WORKSPACE/rust/target/release/kata.exe" --check-plan | head -3
