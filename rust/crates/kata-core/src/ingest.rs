@@ -535,6 +535,8 @@ mod tests {
         assert_eq!(output_name("epub"), "epub");
     }
 
+    // Uses POSIX paths; Windows absolute paths need drive letters.
+    #[cfg(unix)]
     #[test]
     fn folder_paths_expand_home_and_must_be_absolute() {
         assert_eq!(
