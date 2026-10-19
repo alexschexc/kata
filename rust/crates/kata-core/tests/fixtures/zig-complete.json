@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "plan_hash": 14968686216195794100,
+  "next_day": 1,
+  "completed_on": 20261019,
+  "scope_hash": 0,
+  "positions": [
+    {
+      "row": 0,
+      "line": 0
+    },
+    {
+      "row": 0,
+      "line": 0
+    },
+    {
+      "row": 0,
+      "line": 0
+    }
+  ],
+  "enabled": [
+    true,
+    true,
+    true
+  ],
+  "linked": true,
+  "focus": 0,
+  "edition": "\u0000\u0000\u0000"
+}
