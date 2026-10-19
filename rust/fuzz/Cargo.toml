@@ -1,0 +1,44 @@
+[package]
+name = "kata-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT-0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kata-core = { path = "../crates/kata-core" }
+
+# Separate workspace: fuzzing needs nightly, the main workspace stays on the pinned stable.
+[workspace]
+
+[profile.release]
+debug = 1
+overflow-checks = true
+
+[[bin]]
+name = "epub"
+path = "fuzz_targets/epub.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "xhtml"
+path = "fuzz_targets/xhtml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "images"
+path = "fuzz_targets/images.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "graphics"
+path = "fuzz_targets/graphics.rs"
+test = false
+doc = false
