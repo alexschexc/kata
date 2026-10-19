@@ -1,7 +1,6 @@
 //! Pure logic: no terminal or OS access.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn builds() {}
-}
+mod fold_table;
+
+pub mod fold;
+pub mod width;
