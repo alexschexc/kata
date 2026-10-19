@@ -15,8 +15,8 @@ use std::path::Path;
 
 pub type CliResult = Result<(), Box<dyn Error>>;
 
-const OPTINA: &str = include_str!("../../../../config/optina.json");
-const GOSPELS: &str = include_str!("../../../../config/gospels.json");
+pub(crate) const OPTINA: &str = include_str!("../../../../config/optina.json");
+pub(crate) const GOSPELS: &str = include_str!("../../../../config/gospels.json");
 const NOTICES: &str = include_str!("../../../../src/third_party_notices.txt");
 const PROVENANCE: &str = include_str!("../../../../src/data/provenance.json");
 
@@ -54,7 +54,7 @@ fn parse_plan_day(raw: &str) -> Result<usize, Box<dyn Error>> {
     }
 }
 
-fn env_var(name: &str) -> Option<String> {
+pub(crate) fn env_var(name: &str) -> Option<String> {
     std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
 }
 
@@ -168,7 +168,17 @@ pub fn run(args: &[String]) -> CliResult {
         let arg = args[i].as_str();
         match arg {
             "--help" => return write_out(HELP),
-            "--detect-graphics" => return fail("DetectGraphicsNotYetPorted"),
+            "--detect-graphics" => {
+                let mut tui = kata_term::tui::Tui::new()?;
+                let caps = tui.detect_graphics(400);
+                drop(tui);
+                return write_out(&format!(
+                    "Inline images: {}; cell {}x{} px\n",
+                    caps.describe(),
+                    caps.cell_width,
+                    caps.cell_height
+                ));
+            }
             "--licenses" => {
                 return write_out(&format!(
                     "{NOTICES}\nBundled dataset provenance (build-time extraction):\n{PROVENANCE}"
@@ -211,7 +221,7 @@ pub fn run(args: &[String]) -> CliResult {
         ),
     };
     if !dump && !check_plan && !complete && start_day.is_none() {
-        return fail("InteractiveModeNotYetPorted");
+        return crate::app::run(&base, plan_path, passage);
     }
 
     let remembered = if plan_path.is_none() {

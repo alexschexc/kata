@@ -126,8 +126,8 @@ pub struct Options<'a> {
     pub names: [String; 3],
 }
 
-impl Options<'_> {
-    pub fn new(title: &str, state_path: PathBuf) -> Options<'static> {
+impl<'a> Options<'a> {
+    pub fn new(title: &str, state_path: PathBuf) -> Options<'a> {
         Options {
             title: title.to_string(),
             plan_mode: false,
