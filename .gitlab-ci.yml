@@ -126,6 +126,9 @@ rust-verify:
   - apt-get update -qq && apt-get install -y -qq binutils file >/dev/null
   script:
   - python tests/rust-cross-artifacts.py --expect-corpora
+  - python tests/provenance-check.py "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
+  - python tests/provenance-check.py "$CI_PROJECT_DIR/rust/target/aarch64-apple-darwin/release/kata" --no-run
+  - python tests/provenance-check.py "$CI_PROJECT_DIR/rust/target/x86_64-pc-windows-gnu/release/kata.exe" --no-run
   - python tests/target-smoke.py "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
   - python tests/rust-dump-diff.py "$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata" "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
 

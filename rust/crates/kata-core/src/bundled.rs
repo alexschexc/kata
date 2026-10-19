@@ -7,7 +7,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -48,56 +47,15 @@ pub struct Span {
     pub end: usize,
 }
 
-fn compute_spans(text: &'static str) -> Vec<Span> {
-    let mut spans: Vec<Span> = Vec::new();
-    let mut offset = 0usize;
-    let bytes = text.as_bytes();
-    while offset < bytes.len() {
-        // Python's bytes.splitlines(keepends=True): break after \n, \r\n or a lone \r.
-        let mut end = offset;
-        while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
-            end += 1;
-        }
-        if end < bytes.len() {
-            end += if bytes[end] == b'\r' && bytes.get(end + 1) == Some(&b'\n') {
-                2
-            } else {
-                1
-            };
-        }
-        let line = &text[offset..end];
-        let fields: Vec<&str> = line
-            .trim_end_matches(['\r', '\n'])
-            .splitn(6, '\t')
-            .collect();
-        if fields.len() == 4 {
-            // Source subsection heading, not a verse.
-            offset = end;
-            continue;
-        }
-        assert_eq!(
-            fields.len(),
-            6,
-            "embedded TSV: expected six fields at byte {offset}"
-        );
-        let chapter: u16 = fields[3].parse().expect("embedded TSV: chapter number");
-        match spans.last_mut() {
-            Some(last) if last.book == fields[0] && last.chapter == chapter => last.end = end,
-            _ => spans.push(Span {
-                book: fields[0],
-                chapter,
-                start: offset,
-                end,
-            }),
-        }
-        offset = end;
-    }
-    spans
-}
+include!(concat!(env!("OUT_DIR"), "/spans.rs"));
 
+/// Chapter byte spans of source `source_index`, generated at build time from the embedded TSV.
 pub fn spans(source_index: usize) -> &'static [Span] {
-    static SPANS: [OnceLock<Vec<Span>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    SPANS[source_index].get_or_init(|| compute_spans(TEXTS[source_index]))
+    match source_index {
+        0 => &SPANS_0,
+        1 => &SPANS_1,
+        _ => &SPANS_2,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -342,6 +300,53 @@ pub fn query(source_index: usize, raw_book: &str, suffix: &str) -> Result<Vec<Ro
 mod tests {
     use super::*;
 
+    pub(crate) fn compute_spans(text: &'static str) -> Vec<Span> {
+        let mut spans: Vec<Span> = Vec::new();
+        let mut offset = 0usize;
+        let bytes = text.as_bytes();
+        while offset < bytes.len() {
+            // Python's bytes.splitlines(keepends=True): break after \n, \r\n or a lone \r.
+            let mut end = offset;
+            while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
+                end += 1;
+            }
+            if end < bytes.len() {
+                end += if bytes[end] == b'\r' && bytes.get(end + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
+            }
+            let line = &text[offset..end];
+            let fields: Vec<&str> = line
+                .trim_end_matches(['\r', '\n'])
+                .splitn(6, '\t')
+                .collect();
+            if fields.len() == 4 {
+                // Source subsection heading, not a verse.
+                offset = end;
+                continue;
+            }
+            assert_eq!(
+                fields.len(),
+                6,
+                "embedded TSV: expected six fields at byte {offset}"
+            );
+            let chapter: u16 = fields[3].parse().expect("embedded TSV: chapter number");
+            match spans.last_mut() {
+                Some(last) if last.book == fields[0] && last.chapter == chapter => last.end = end,
+                _ => spans.push(Span {
+                    book: fields[0],
+                    chapter,
+                    start: offset,
+                    end,
+                }),
+            }
+            offset = end;
+        }
+        spans
+    }
+
     /// Parse the Zig generated index (`.{ .book = "X", .chapter = N, .start = A, .end = B }`).
     fn zig_spans(name: &str) -> Vec<Span> {
         let path = format!(
@@ -371,6 +376,13 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn build_time_spans_equal_a_runtime_scan() {
+        for (index, text) in TEXTS.iter().enumerate() {
+            assert_eq!(spans(index), compute_spans(text).as_slice());
+        }
     }
 
     #[test]

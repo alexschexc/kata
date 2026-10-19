@@ -43,3 +43,5 @@ jobs:
         run: cargo test --locked
       - name: Smoke test
         run: python3 tests/target-smoke.py "$GITHUB_WORKSPACE/rust/target/release/kata"
+      - name: Provenance
+        run: python3 tests/provenance-check.py "$GITHUB_WORKSPACE/rust/target/release/kata"
