@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/kata-core", "crates/kata-term", "crates/kata"]
+
+[workspace.package]
+version = "0.4.0-dev"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT-0"
+publish = false
+
+[workspace.dependencies]
+kata-core = { path = "crates/kata-core" }
+kata-term = { path = "crates/kata-term" }
