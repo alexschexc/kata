@@ -36,9 +36,11 @@ pub struct Decoder {
 fn utf8_len(lead: u8) -> Option<u8> {
     match lead {
         0x00..=0x7f => Some(1),
-        0xc2..=0xdf => Some(2),
+        // Matches Zig's utf8ByteSequenceLength: overlong/out-of-range leads still frame a
+        // sequence of that length so their continuation bytes stay inert.
+        0xc0..=0xdf => Some(2),
         0xe0..=0xef => Some(3),
-        0xf0..=0xf4 => Some(4),
+        0xf0..=0xf7 => Some(4),
         _ => None,
     }
 }
@@ -304,6 +306,25 @@ mod tests {
         let noise = b"@!?\x00\x01\x02\x05\x06\x7e\xff\xfe\x80\xc3\xa9\xf0\x9f\x98\x80\xc3q\xf0cyq\x1bq\x1b\xc3\xa9";
         assert!(feed_all(&mut decoder, noise).is_empty());
         assert_eq!(decoder.feed(b'c'), Some(b'c'));
+    }
+
+    #[test]
+    fn invalid_lead_bytes_still_frame_their_continuations() {
+        // Zig frames 0xC0/0xC1 (2 bytes) and 0xF5..0xF7 (4 bytes); the following ASCII bytes are
+        // consumed as the sequence body and must not dispatch.
+        for lead in [0xc0u8, 0xc1, 0xf5, 0xf7] {
+            let mut decoder = Decoder::new();
+            let body: &[u8] = if lead >= 0xf0 { b"qcy" } else { b"q" };
+            assert_eq!(decoder.feed(lead), None);
+            for &b in body {
+                assert_eq!(decoder.feed(b), None, "lead {lead:#x}");
+            }
+            assert_eq!(decoder.feed(b'j'), Some(b'j'));
+        }
+        // Leads at or above 0xF8 frame nothing.
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.feed(0xf8), None);
+        assert_eq!(decoder.feed(b'j'), Some(b'j'));
     }
 
     #[test]

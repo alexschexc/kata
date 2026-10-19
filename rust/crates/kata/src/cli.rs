@@ -58,6 +58,102 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
 }
 
+fn ingest_command(args: &[String]) -> CliResult {
+    use kata_core::ingest::{self, Folders};
+    let (mut force, mut save) = (false, false);
+    let (mut ingest_dir, mut library_dir): (Option<String>, Option<String>) = (None, None);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--force" => force = true,
+            "--save" => save = true,
+            "--ingest-dir" | "--library-dir" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return fail("MissingArgument");
+                };
+                if args[i - 1] == "--ingest-dir" {
+                    ingest_dir = Some(value.clone())
+                } else {
+                    library_dir = Some(value.clone())
+                }
+            }
+            _ => return fail("UnknownArgument"),
+        }
+        i += 1;
+    }
+    let config_home = paths::root(env_var, cfg!(windows), Kind::Config)?;
+    let saved = ingest::load_folders(Path::new(&config_home))?;
+    if save && (ingest_dir.is_none() || library_dir.is_none()) {
+        return fail("SaveNeedsBothFolders");
+    }
+    let home = env_var("HOME");
+    if let Some(d) = &ingest_dir {
+        ingest_dir = Some(ingest::normalize_folder(d, home.as_deref())?);
+    }
+    if let Some(d) = &library_dir {
+        library_dir = Some(ingest::normalize_folder(d, home.as_deref())?);
+    }
+    if ingest_dir.is_none() != library_dir.is_none() && saved.is_none() {
+        return fail("BothFoldersRequired");
+    }
+    let folders = Folders {
+        version: 1,
+        ingest: match (ingest_dir, &saved) {
+            (Some(d), _) => d,
+            (None, Some(f)) => f.ingest.clone(),
+            (None, None) => {
+                write_out(
+                    "kata: no ingest folders chosen yet. Launch kata to choose them, or pass\n  kata ingest --ingest-dir PATH --library-dir PATH\n",
+                )?;
+                return fail("FoldersNotChosen");
+            }
+        },
+        library: library_dir.unwrap_or_else(|| {
+            saved
+                .as_ref()
+                .map(|f| f.library.clone())
+                .unwrap_or_default()
+        }),
+    };
+    // Flags are one-shot unless --save is given: a verification run must never overwrite the
+    // folders the user chose.
+    if save {
+        ingest::save_folders(Path::new(&config_home), &folders)?;
+    }
+    write_out(&format!(
+        "Ingest: {}\nLibrary: {}\n",
+        folders.ingest, folders.library
+    ))?;
+    let summary = ingest::run(&folders, force)?;
+    for report in &summary.reports {
+        let sep = if report.detail.is_empty() { "" } else { " · " };
+        write_out(&format!(
+            "  {:<9} {}{sep}{}\n",
+            report.outcome.name(),
+            report.name,
+            report.detail
+        ))?;
+    }
+    write_out(&format!(
+        "{} converted, {} unchanged, {} failed, {} orphaned; {} documents indexed{}.\n",
+        summary.converted,
+        summary.unchanged,
+        summary.failed,
+        summary.orphaned,
+        summary.indexed,
+        if summary.index_rebuilt {
+            " (index rebuilt)"
+        } else {
+            " (index current)"
+        }
+    ))?;
+    if summary.failed > 0 {
+        return fail("IngestFailures");
+    }
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> CliResult {
     let mut passage: Option<&str> = None;
     let mut plan_path: Option<&str> = None;
@@ -65,7 +161,7 @@ pub fn run(args: &[String]) -> CliResult {
     let (mut dump, mut check_plan, mut complete, mut confirm) = (false, false, false, false);
     let mut start_day: Option<usize> = None;
     if args.len() >= 2 && args[1] == "ingest" {
-        return fail("IngestNotYetPorted");
+        return ingest_command(&args[2..]);
     }
     let mut i = 1;
     while i < args.len() {

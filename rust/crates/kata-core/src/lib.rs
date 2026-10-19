@@ -5,8 +5,11 @@ mod fold_table;
 
 pub mod bundled;
 pub mod catalog;
+pub mod convert;
 pub mod document;
+pub mod epub;
 pub mod fold;
+pub mod ingest;
 pub mod keys;
 pub mod layout;
 pub mod library;
@@ -19,3 +22,4 @@ pub mod source;
 pub mod state;
 pub mod width;
 pub mod wyhash;
+pub mod xhtml;
