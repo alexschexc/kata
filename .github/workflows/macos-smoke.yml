@@ -26,3 +26,20 @@ jobs:
         run: python3 tests/target-smoke.py "$GITHUB_WORKSPACE/zig-out/macos-arm64/bin/kata"
       - name: Colour fallback (Terminal.app)
         run: KATA_BIN="$GITHUB_WORKSPACE/zig-out/macos-arm64/bin/kata" python3 tests/color-fallback-pty.py
+
+  rust-macos-arm64:
+    # Native build of the Rust port (no Zig, no cross-compilation) on Apple silicon.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        working-directory: rust
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build
+        working-directory: rust
+        run: cargo build --release --locked
+      - name: Test
+        working-directory: rust
+        run: cargo test --locked
+      - name: Smoke test
+        run: python3 tests/target-smoke.py "$GITHUB_WORKSPACE/rust/target/release/kata"

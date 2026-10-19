@@ -19,6 +19,9 @@ variables:
   ZIG_VERSION: 0.16.0
   # From https://ziglang.org/download/index.json (x86_64-linux tarball).
   ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+  RUST_VERSION: 1.98.0
+  CARGO_ZIGBUILD_VERSION: 0.23.4
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
 secret_detection:
   stage: secret-detection
 
@@ -75,3 +78,61 @@ windows-smoke:
   needs: [zig-build]
   script:
   - python tests/target-smoke.py "$env:CI_PROJECT_DIR\zig-out\windows-x64\bin\kata.exe"
+
+# ---- Rust port (Linear project "Port Kata to Rust") ----
+
+# Formatting, lints and unit tests. Runs on every pipeline.
+rust-test:
+  stage: test
+  image: rust:$RUST_VERSION-slim
+  cache:
+    key: rust-test-$RUST_VERSION
+    paths: [.cargo-home/registry, rust/target]
+  script:
+  - cd rust
+  - rustup component add rustfmt clippy
+  - cargo fmt --all --check
+  - cargo clippy --locked --all-targets -- -D warnings
+  - cargo test --locked
+
+# Cross-build all release targets from Linux; Zig is only the linker (cargo-zigbuild).
+rust-build:
+  stage: build
+  image: rust:$RUST_VERSION
+  cache:
+    key: rust-build-$RUST_VERSION-zigbuild-$CARGO_ZIGBUILD_VERSION
+    paths: [.cargo-home/registry, .cargo-home/bin]
+  before_script:
+  - apt-get update -qq && apt-get install -y -qq xz-utils curl binutils >/dev/null
+  - curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz
+  - echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
+  - tar -xJf /tmp/zig.tar.xz -C /opt && export PATH=/opt/zig-x86_64-linux-$ZIG_VERSION:$CARGO_HOME/bin:$PATH
+  - cargo install cargo-zigbuild --version $CARGO_ZIGBUILD_VERSION --locked
+  script:
+  - scripts/rust-cross-build.sh
+  artifacts:
+    paths:
+    - rust/target/x86_64-unknown-linux-musl/release/kata
+    - rust/target/aarch64-apple-darwin/release/kata
+    - rust/target/x86_64-pc-windows-gnu/release/kata.exe
+    expire_in: 1 week
+
+# Inspect the cross-built binaries and compare the Linux one byte-for-byte with the Zig build.
+rust-verify:
+  stage: test
+  image: python:3.13-slim
+  needs: [zig-build, rust-build]
+  before_script:
+  - apt-get update -qq && apt-get install -y -qq binutils file >/dev/null
+  script:
+  - python tests/rust-cross-artifacts.py --expect-corpora
+  - python tests/target-smoke.py "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
+  - python tests/rust-dump-diff.py "$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata" "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
+
+# Native Windows execution of the Rust build.
+rust-windows-smoke:
+  stage: test
+  tags: [saas-windows-medium-amd64]
+  needs: [rust-build]
+  script:
+  - python tests/target-smoke.py "$env:CI_PROJECT_DIR\rust\target\x86_64-pc-windows-gnu\release\kata.exe"
