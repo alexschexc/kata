@@ -69,3 +69,7 @@ Installed script headers declare public-domain code. Text licensing must be chec
 - https://sblgnt.com/license/
 
 The current SBLGNT license page specifies Creative Commons Attribution 4.0 International; attribution, license links, and change notices must be retained as applicable. Greek upstream's older README description of a noncommercial license is not the current license page. Confirm edition provenance and the Septuagint, Latin, and KJV datasets' applicable redistribution terms before publishing a bundled corpus. Script license declarations alone do not establish all text rights.
+
+## Zig reference release
+
+The Zig implementation is frozen at tag `V0.3.1` (commit 859c586, the Terminal.app 256-colour hotfix). The Rust port (`rust/`, tracked in Linear project "Port Kata to Rust") is diffed and parity-tested against this tag. Check out the tag to reproduce the Zig build: `git checkout V0.3.1 && zig build`.
