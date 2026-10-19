@@ -10,6 +10,7 @@ pub mod fold;
 pub mod keys;
 pub mod layout;
 pub mod library;
+pub mod paths;
 pub mod picker;
 pub mod plan;
 pub mod reading_units;

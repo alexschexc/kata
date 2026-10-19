@@ -9,3 +9,6 @@ publish.workspace = true
 [dependencies]
 kata-core.workspace = true
 kata-term.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

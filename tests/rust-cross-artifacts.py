@@ -17,7 +17,7 @@ expect_corpora = '--expect-corpora' in sys.argv[1:]
 metadata = json.loads((ROOT/'src/data/provenance.json').read_text())
 # Rust std on macOS links libiconv/libcharset in addition to libSystem; all are system libraries.
 MAC_ALLOWED = {'/usr/lib/libSystem.B.dylib', '/usr/lib/libiconv.2.dylib', '/usr/lib/libcharset.1.dylib'}
-WIN_SYSTEM = {'kernel32.dll', 'msvcrt.dll', 'ntdll.dll', 'advapi32.dll', 'ws2_32.dll', 'bcrypt.dll',
+WIN_SYSTEM = {'kernel32.dll', 'msvcrt.dll', 'ntdll.dll', 'advapi32.dll', 'ws2_32.dll', 'bcrypt.dll', 'bcryptprimitives.dll',
               'crypt32.dll', 'user32.dll', 'shell32.dll', 'ole32.dll', 'secur32.dll'}
 results = {}
 for target, path in inputs.items():
