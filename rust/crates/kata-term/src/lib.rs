@@ -1,6 +1,9 @@
-//! Terminal layer: colour depth handling and input framing. Raw mode, size and event reading
-//! over crossterm are added next (KAT-20); these modules are pure and testable without a TTY.
+//! Terminal layer: raw-mode backend, colour depth handling, input framing, the theme, and the
+//! terminal user interface (reader, menus, prompts).
 
 pub mod backend;
 pub mod color;
 pub mod input;
+pub mod start_menu;
+pub mod theme;
+pub mod tui;

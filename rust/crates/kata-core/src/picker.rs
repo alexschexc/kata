@@ -2,14 +2,7 @@
 
 use crate::keys::recognized;
 
-/// Reading location the picker can open. Mirrors `library.Location` in the Zig sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Location {
-    pub title: usize,
-    pub section: usize,
-    pub chapter: u16,
-    pub verse: Option<u16>,
-}
+pub use crate::library::Location;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -62,6 +55,26 @@ impl Picker {
     pub fn new(kind: Kind) -> Picker {
         Picker {
             kind,
+            ..Picker::default()
+        }
+    }
+
+    /// A picker of `kind` with `selected` highlighted.
+    pub fn at(kind: Kind, selected: usize) -> Picker {
+        Picker {
+            kind,
+            selected,
+            ..Picker::default()
+        }
+    }
+
+    /// A numbered menu: typed digits select a row, counted from `number_base`.
+    pub fn numbered(selected: usize, number_base: usize) -> Picker {
+        Picker {
+            kind: Kind::Plans,
+            selected,
+            numeric: true,
+            number_base,
             ..Picker::default()
         }
     }

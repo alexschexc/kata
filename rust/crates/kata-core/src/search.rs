@@ -292,9 +292,229 @@ pub fn find_in(verses: &[Verse], query: &Query) -> Results {
     results
 }
 
+/// Search prompt, results panel and highlight state shared by the reader (ported from the Zig
+/// `search.State`). Typed bytes arrive one at a time; only printable ASCII and complete UTF-8
+/// sequences are kept.
+#[derive(Debug)]
+pub struct SearchState {
+    /// Source searched (and highlighted) by the submitted query.
+    pub pane: usize,
+    /// Prompt being typed (`/`), searched in `prompt_pane`.
+    pub prompt: bool,
+    pub prompt_pane: usize,
+    text: Vec<u8>,
+    pending: Vec<u8>,
+    pub typing: Query,
+    submitted: Vec<u8>,
+    pub active: Query,
+    pub hits: Vec<Hit>,
+    pub occurrences: usize,
+    pub selected: usize,
+    /// Results panel visible / receiving keys.
+    pub open: bool,
+    pub focus: bool,
+    /// Column names shown in the panel and notices (edition-aware).
+    pub names: [String; 3],
+    /// When set, a column's active edition replaces its bundled source in search (Psalms only
+    /// for the ingested Psalter).
+    pub editions: [Option<Vec<Verse>>; 3],
+    /// Set when a result opened another reading; the next reader view shows and focuses the
+    /// searched source.
+    pub reveal: bool,
+}
+
+const MAX_TEXT: usize = 256;
+
+impl Default for SearchState {
+    fn default() -> Self {
+        SearchState {
+            pane: 0,
+            prompt: false,
+            prompt_pane: 0,
+            text: Vec::new(),
+            pending: Vec::new(),
+            typing: Query::default(),
+            submitted: Vec::new(),
+            active: Query::default(),
+            hits: Vec::new(),
+            occurrences: 0,
+            selected: 0,
+            open: false,
+            focus: false,
+            names: ["kjv".into(), "grb".into(), "vul".into()],
+            editions: [None, None, None],
+            reveal: false,
+        }
+    }
+}
+
+fn sequence_length(lead: u8) -> Option<usize> {
+    match lead {
+        0x00..=0x7f => Some(1),
+        0xc0..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf7 => Some(4),
+        _ => None,
+    }
+}
+
+impl SearchState {
+    pub fn begin(&mut self, pane: usize) {
+        self.prompt = true;
+        self.prompt_pane = pane;
+        self.text.clear();
+        self.pending.clear();
+        self.typing = Query::default();
+    }
+
+    pub fn prompt_text(&self) -> &str {
+        std::str::from_utf8(&self.text).unwrap_or("")
+    }
+
+    pub fn submitted_text(&self) -> &str {
+        std::str::from_utf8(&self.submitted).unwrap_or("")
+    }
+
+    /// Accepts printable ASCII and complete UTF-8 sequences, byte by byte.
+    pub fn input(&mut self, byte: u8) {
+        if byte < 0x80 {
+            self.pending.clear();
+            if byte < 0x20 || byte == 0x7f {
+                return;
+            }
+            self.append(&[byte]);
+        } else if byte >= 0xC0 {
+            self.pending.clear();
+            self.pending.push(byte);
+        } else if !self.pending.is_empty() && self.pending.len() < 4 {
+            self.pending.push(byte);
+            let Some(need) = sequence_length(self.pending[0]) else {
+                self.pending.clear();
+                return;
+            };
+            if self.pending.len() == need {
+                let complete = std::mem::take(&mut self.pending);
+                if std::str::from_utf8(&complete).is_ok() {
+                    self.append(&complete);
+                }
+            }
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        if self.text.len() + bytes.len() > MAX_TEXT {
+            return;
+        }
+        self.text.extend_from_slice(bytes);
+        self.typing = Query::new(self.prompt_text());
+    }
+
+    pub fn backspace(&mut self) {
+        self.pending.clear();
+        if self.text.is_empty() {
+            return;
+        }
+        // Same arithmetic as the Zig build: drop one byte, then any continuation bytes it exposed.
+        let mut len = self.text.len() - 1;
+        while len > 0 && (self.text[len] & 0xC0) == 0x80 {
+            len -= 1;
+        }
+        self.text.truncate(len);
+        self.typing = Query::new(self.prompt_text());
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.pending.clear();
+        self.typing = Query::default();
+    }
+
+    pub fn cancel(&mut self) {
+        self.prompt = false;
+        self.pending.clear();
+    }
+
+    /// Runs the typed query over the prompt pane's whole source. An empty query cancels without
+    /// disturbing the previous results.
+    pub fn submit(&mut self) {
+        self.prompt = false;
+        if self.typing.is_empty() {
+            return;
+        }
+        let results = match &self.editions[self.prompt_pane] {
+            Some(verses) => find_in(verses, &self.typing),
+            None => find(self.prompt_pane, &self.typing),
+        };
+        self.pane = self.prompt_pane;
+        self.active = self.typing;
+        self.submitted = self.text.clone();
+        self.hits = results.hits;
+        self.occurrences = results.occurrences;
+        self.selected = 0;
+        self.open = true;
+        self.focus = true;
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.focus = false;
+        self.active = Query::default();
+        self.hits = Vec::new();
+        self.occurrences = 0;
+        self.submitted.clear();
+    }
+
+    /// Query to highlight in the reader, and in which source pane.
+    pub fn highlight(&self) -> Option<(usize, &Query)> {
+        if self.prompt {
+            return if self.typing.is_empty() {
+                None
+            } else {
+                Some((self.prompt_pane, &self.typing))
+            };
+        }
+        if self.active.is_empty() {
+            None
+        } else {
+            Some((self.pane, &self.active))
+        }
+    }
+
+    pub fn current(&self) -> Option<&Hit> {
+        self.hits.get(self.selected)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_state_keeps_complete_utf8_and_backspace_removes_whole_characters() {
+        let mut state = SearchState::default();
+        state.begin(0);
+        for b in "aλ".bytes() {
+            state.input(b);
+        }
+        state.input(0xCE); // a dangling lead byte is never kept
+        assert_eq!(state.prompt_text(), "aλ");
+        state.backspace();
+        assert_eq!(state.prompt_text(), "a");
+        state.input(7); // control bytes are ignored
+        assert_eq!(state.prompt_text(), "a");
+        state.clear();
+        state.submit();
+        assert!(!state.open, "an empty query opens nothing");
+        state.begin(0);
+        for b in b"shepherd" {
+            state.input(*b);
+        }
+        state.submit();
+        assert!(state.open && state.focus && !state.hits.is_empty());
+        assert_eq!(state.highlight().map(|h| h.0), Some(0));
+        state.close();
+        assert!(state.hits.is_empty() && state.highlight().is_none());
+    }
 
     #[test]
     fn matches_start_at_word_boundaries_and_extend_to_the_word_end() {

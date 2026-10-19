@@ -6,8 +6,18 @@ use kata_core::inline_image::Renderer;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let protocol = if args[2] == "kitty" { Protocol::Kitty } else { Protocol::Sixel };
-    let caps = Capabilities { protocol, cell_width: 10, cell_height: 20, answered: true, ..Capabilities::default() };
+    let protocol = if args[2] == "kitty" {
+        Protocol::Kitty
+    } else {
+        Protocol::Sixel
+    };
+    let caps = Capabilities {
+        protocol,
+        cell_width: 10,
+        cell_height: 20,
+        answered: true,
+        ..Capabilities::default()
+    };
     for (n, name) in args[3..].iter().enumerate() {
         let mut renderer = Renderer::new(&args[0], caps);
         let mut out: Vec<u8> = Vec::new();
