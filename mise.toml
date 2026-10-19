@@ -1,2 +1,16 @@
 [tools]
+# Zig 0.16.0 builds the legacy Zig implementation and is the linker for
+# cargo-zigbuild (cross builds). The Rust port is built with rust/.
 zig = "0.16.0"
+rust = { version = "1.98.0", profile = "minimal", components = "rustfmt,clippy", targets = "x86_64-unknown-linux-musl,aarch64-apple-darwin,x86_64-pc-windows-gnu" }
+"cargo:cargo-zigbuild" = "0.23.4"
+
+[tasks."rust:build"]
+description = "Release build of the Rust port for the host"
+dir = "rust"
+run = "cargo build --release --locked"
+
+[tasks."rust:test"]
+description = "Run the Rust workspace tests"
+dir = "rust"
+run = "cargo test --locked"

@@ -12,3 +12,10 @@ publish = false
 [workspace.dependencies]
 kata-core = { path = "crates/kata-core" }
 kata-term = { path = "crates/kata-term" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
