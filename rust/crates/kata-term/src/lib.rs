@@ -1,7 +1,5 @@
-//! Terminal abstraction (raw mode, size, events, colour depth).
+//! Terminal layer: colour depth handling and input framing. Raw mode, size and event reading
+//! over crossterm are added next (KAT-20); these modules are pure and testable without a TTY.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn builds() {}
-}
+pub mod color;
+pub mod input;
