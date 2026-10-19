@@ -52,10 +52,14 @@ linux-smoke:
   - python tests/target-smoke.py "$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata"
   - KATA_BIN="$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata" python tests/color-fallback-pty.py
 
-# First native macOS execution of Kata. Needs GitLab SaaS macOS runners
-# (Premium/Ultimate); the job stays pending if the project cannot use them.
+# GitLab SaaS macOS runners are not available to this account
+# (no_matching_runner), so the real macOS run lives in
+# .github/workflows/macos-smoke.yml on a GitHub mirror. Kept here as an
+# optional manual job in case runners become available.
 macos-smoke:
   stage: test
+  when: manual
+  allow_failure: true
   tags: [saas-macos-medium-m1]
   image: macos-14-xcode-15
   needs: [zig-build]

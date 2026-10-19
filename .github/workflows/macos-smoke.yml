@@ -1,0 +1,28 @@
+# Native macOS arm64 verification (KAT-7). GitLab SaaS has no macOS runner for
+# this account, so this workflow runs from a GitHub mirror of the repository.
+name: macos-smoke
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14   # Apple silicon
+    env:
+      ZIG_VERSION: 0.16.0
+      # From https://ziglang.org/download/index.json (aarch64-macos tarball).
+      ZIG_SHA256: b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig (checksum verified)
+        run: |
+          curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  /tmp/zig.tar.xz" | shasum -a 256 -c -
+          tar -xJf /tmp/zig.tar.xz -C /opt 2>/dev/null || sudo tar -xJf /tmp/zig.tar.xz -C /opt
+          echo "/opt/zig-aarch64-macos-$ZIG_VERSION" >> "$GITHUB_PATH"
+      - name: Build
+        run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/macos-arm64
+      - name: Smoke test
+        run: python3 tests/target-smoke.py "$GITHUB_WORKSPACE/zig-out/macos-arm64/bin/kata"
+      - name: Colour fallback (Terminal.app)
+        run: KATA_BIN="$GITHUB_WORKSPACE/zig-out/macos-arm64/bin/kata" python3 tests/color-fallback-pty.py
