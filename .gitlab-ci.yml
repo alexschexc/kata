@@ -89,11 +89,14 @@ rust-test:
     key: rust-test-$RUST_VERSION
     paths: [.cargo-home/registry, rust/target]
   script:
+  - apt-get update -qq && apt-get install -y -qq python3 >/dev/null
   - cd rust
   - rustup component add rustfmt clippy
   - cargo fmt --all --check
   - cargo clippy --locked --all-targets -- -D warnings
   - cargo test --locked
+  - cargo build --locked --example term_probe
+  - cd .. && python3 tests/term-pty.py
 
 # Cross-build all release targets from Linux; Zig is only the linker (cargo-zigbuild).
 rust-build:
