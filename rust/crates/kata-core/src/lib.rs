@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod document;
 pub mod fold;
 pub mod keys;
+pub mod layout;
 pub mod library;
 pub mod picker;
 pub mod plan;
