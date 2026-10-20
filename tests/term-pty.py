@@ -39,6 +39,12 @@ class Probe:
         self.expect(expect, start)
 
 
+# macOS sets PENDIN (0x20000000, typeahead being reprocessed) after a mode change; it is kernel
+# state, not something the program restores.
+def lflag(value):
+    return value & ~0x20000000 if sys.platform == 'darwin' else value
+
+
 probe = Probe()
 probe.expect('size 97x31')
 raw = termios.tcgetattr(probe.slave)
@@ -54,9 +60,7 @@ fcntl.ioctl(probe.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
 probe.send(b'q', 'restored')
 probe.p.wait(timeout=5)
 after = termios.tcgetattr(probe.slave)
-# macOS sets PENDIN (0x20000000: typeahead being reprocessed) after a mode change; it is kernel state.
-NOKERNINFO = 0x20000000 if sys.platform == 'darwin' else 0
-assert after[3] & ~NOKERNINFO == probe.before[3] & ~NOKERNINFO and after[0] == probe.before[0], \
+assert lflag(after[3]) == lflag(probe.before[3]) and after[0] == probe.before[0], \
     f'termios not restored: iflag {probe.before[0]:#x}->{after[0]:#x}, lflag {probe.before[3]:#x}->{after[3]:#x}'
 assert probe.p.returncode == 0, probe.p.returncode
 
@@ -67,5 +71,5 @@ os.killpg(probe.p.pid, signal.SIGTERM)
 probe.expect('restored')
 probe.p.wait(timeout=5)
 assert probe.p.returncode == 0, ('SIGTERM exit', probe.p.returncode)
-assert termios.tcgetattr(probe.slave)[3] == probe.before[3], 'termios not restored after SIGTERM'
+assert lflag(termios.tcgetattr(probe.slave)[3]) == lflag(probe.before[3]), 'termios not restored after SIGTERM'
 print('PASS kata-term PTY: raw mode, size, key decoding, paste quarantine, lone ESC, SIGTERM, termios restore')
