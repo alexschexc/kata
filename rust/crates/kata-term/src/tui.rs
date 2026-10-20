@@ -589,6 +589,16 @@ impl Tui {
         }
     }
 
+    /// A frame that mixes text and graphics: colours are rewritten when needed, graphics bytes
+    /// pass through unchanged (they contain no 24-bit colour sequences).
+    pub fn write_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        if self.colors_256 {
+            backend::write_all(&color::downsample(bytes))
+        } else {
+            backend::write_all(bytes)
+        }
+    }
+
     /// Raw bytes (sixel/kitty graphics) bypass colour rewriting.
     pub fn write_raw(&self, bytes: &[u8]) -> io::Result<()> {
         backend::write_all(bytes)

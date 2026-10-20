@@ -5,16 +5,20 @@
 use crate::cli::{self, GOSPELS, OPTINA};
 use crate::clock;
 use kata_core::catalog::{self, Catalog, Entry};
+use kata_core::document::{self, Document};
+use kata_core::graphics::Capabilities;
 use kata_core::ingest::{self, Folders, IndexEntry};
 use kata_core::layout::{self, Row};
 use kata_core::library::{self, Location};
 use kata_core::paths::{self, Kind};
 use kata_core::picker::Action;
 use kata_core::reading;
+use kata_core::search::Query;
 use kata_core::search::SearchState;
 use kata_core::source::{self, Reference};
 use kata_core::state::{self, State};
 use kata_core::wyhash;
+use kata_term::book_reader::{self, Exit, Position};
 use kata_term::start_menu::{self, Book, Choice};
 use kata_term::tui::{self, ChooseOptions, Options, Tui};
 use std::error::Error;
@@ -286,6 +290,144 @@ fn choose_folders(
     Ok(true)
 }
 
+fn load_book(shelf: &Shelf, index: usize) -> Result<Document, Box<dyn Error>> {
+    let path = Path::new(&shelf.folders.library).join(&shelf.entries[index].file);
+    Ok(document::parse(&std::fs::read(path)?)?)
+}
+
+/// Reads library book `index` (at `start`, else the saved position).
+fn open_book(
+    tui: &mut Tui,
+    shelf: &Shelf,
+    index: usize,
+    base: &str,
+    caps: Capabilities,
+    start: Option<Position>,
+) -> (Exit, Option<String>) {
+    let entry = &shelf.entries[index];
+    let doc = match load_book(shelf, index) {
+        Ok(doc) => doc,
+        Err(error) => {
+            return (
+                Exit::Home,
+                Some(format!(
+                    "Cannot open {}: {error}. Re-run ingest.",
+                    entry.title
+                )),
+            );
+        }
+    };
+    match book_reader::run(
+        tui,
+        &doc,
+        &entry.file,
+        base,
+        &shelf.folders.library,
+        caps,
+        start,
+        None,
+        None,
+    ) {
+        Ok(exit) => (exit, None),
+        Err(error) => (
+            Exit::Home,
+            Some(format!("Cannot read {}: {error}.", entry.title)),
+        ),
+    }
+}
+
+/// Library-wide search: one query over every converted book, results in a menu; a chosen result
+/// opens its book there, and returning from the book comes back to the results.
+fn search_books(
+    tui: &mut Tui,
+    shelf: &Shelf,
+    base: &str,
+    caps: Capabilities,
+) -> io::Result<(Exit, Option<String>)> {
+    let description = "Word or phrase (word-prefix, case- and accent-insensitive). Enter searches every converted book; Esc cancels.";
+    let Some(raw) = tui.prompt("Search all books", description, "")? else {
+        return Ok((Exit::Home, None));
+    };
+    let query = Query::new(&raw);
+    if query.is_empty() {
+        return Ok((Exit::Home, None));
+    }
+    let _ = tui.status("Searching every converted book…");
+    const LIMIT: usize = 2000;
+    let (mut found, mut labels): (Vec<(usize, Position)>, Vec<String>) = (Vec::new(), Vec::new());
+    let (mut occurrences, mut books_with_hits) = (0, 0);
+    for (index, entry) in shelf.entries.iter().enumerate() {
+        let Ok(doc) = load_book(shelf, index) else {
+            continue;
+        };
+        let (hits, count) = book_reader::find(&doc, &query);
+        if !hits.is_empty() {
+            books_with_hits += 1;
+        }
+        occurrences += count;
+        for hit in hits {
+            if found.len() >= LIMIT {
+                break;
+            }
+            let mut begin = hit.match_range.start.saturating_sub(30);
+            while begin > 0 && begin < hit.text.len() && !hit.text.is_char_boundary(begin) {
+                begin -= 1;
+            }
+            let mut end = hit.text.len().min(hit.match_range.end + 60);
+            while end > begin && !hit.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let title = &doc.chapters[hit.section].title;
+            labels.push(format!(
+                "{} · {title} · {}{}",
+                entry.title,
+                if begin > 0 { "…" } else { "" },
+                &hit.text[begin..end]
+            ));
+            found.push((
+                index,
+                Position {
+                    version: 1,
+                    chapter: hit.section,
+                    block: usize::from(hit.number) - 1,
+                },
+            ));
+        }
+    }
+    if found.is_empty() {
+        return Ok((
+            Exit::Home,
+            Some(format!(
+                "No matches for “{raw}” in {} books.",
+                shelf.entries.len()
+            )),
+        ));
+    }
+    let description = format!(
+        "“{raw}”: {} passages in {books_with_hits} book{} · {occurrences} matches{} · Enter opens; returning from the book comes back here",
+        found.len(),
+        if books_with_hits == 1 { "" } else { "s" },
+        if found.len() >= LIMIT {
+            " (first 2000 shown)"
+        } else {
+            ""
+        }
+    );
+    let mut selected = 0;
+    while !tui.is_interrupted() {
+        let Some(pick) = tui.choose("Search results", &description, &labels, selected, 1)? else {
+            return Ok((Exit::Home, None));
+        };
+        selected = pick;
+        let (book, position) = found[pick];
+        let (exit, _) = open_book(tui, shelf, book, base, caps, Some(position));
+        if exit == Exit::Quit {
+            return Ok((exit, None));
+        }
+    }
+    Ok((Exit::Home, None))
+}
+
 struct Session {
     title: String,
     rows: Vec<Row>,
@@ -484,7 +626,7 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
     }
     let mut tui = Tui::new()?;
     // One capability query per launch (bounded); KATA_IMAGES=off disables.
-    let _graphics = if cli::env_var("KATA_IMAGES").as_deref() == Some("off") {
+    let graphics = if cli::env_var("KATA_IMAGES").as_deref() == Some("off") {
         Default::default()
     } else {
         tui.detect_graphics(300)
@@ -546,9 +688,59 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
                 }
                 continue;
             }
-            Choice::Book(_) | Choice::SearchBooks => {
+            Choice::Book(index) => {
                 active = None;
-                notice = NO_BOOK_READER.into();
+                // Book menu: read, or a reading plan that includes this book.
+                let file = shelf.entries[index].file.clone();
+                let mut choices = vec!["Read · resume where you left off".to_string()];
+                let mut plan_rows: Vec<usize> = Vec::new();
+                for (p, plan_entry) in plans.entries.iter().enumerate() {
+                    if plan_entry
+                        .plan
+                        .config()
+                        .streams
+                        .iter()
+                        .any(|stream| stream.library.as_deref() == Some(file.as_str()))
+                    {
+                        choices.push(format!(
+                            "Reading plan · {} · {} days",
+                            plan_entry.plan.name(),
+                            plan_entry.plan.total_days()
+                        ));
+                        plan_rows.push(p);
+                    }
+                }
+                choices.push("＋ Build a reading plan for this book".into());
+                let Some(pick) = tui.choose(
+                    &shelf.entries[index].title,
+                    "Read freely, follow a reading plan, or build one.",
+                    &choices,
+                    0,
+                    1,
+                )?
+                else {
+                    continue;
+                };
+                if pick == choices.len() - 1 {
+                    notice = "Building plans is not yet available in the Rust build (plan builder port).".into();
+                } else if pick > 0 {
+                    notice = NO_BOOK_READER.into();
+                } else {
+                    let (exit, note) = open_book(&mut tui, &shelf, index, base, graphics, None);
+                    if exit == Exit::Quit {
+                        return Ok(());
+                    }
+                    notice = note.unwrap_or_else(|| "Library".into());
+                }
+                continue;
+            }
+            Choice::SearchBooks => {
+                active = None;
+                let (exit, note) = search_books(&mut tui, &shelf, base, graphics)?;
+                if exit == Exit::Quit {
+                    return Ok(());
+                }
+                notice = note.unwrap_or_else(|| "Library".into());
                 continue;
             }
             Choice::Plans => {

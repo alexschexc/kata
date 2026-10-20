@@ -2,6 +2,7 @@
 //! terminal user interface (reader, menus, prompts).
 
 pub mod backend;
+pub mod book_reader;
 pub mod color;
 pub mod input;
 pub mod start_menu;

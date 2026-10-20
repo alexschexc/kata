@@ -455,6 +455,18 @@ impl SearchState {
         self.focus = true;
     }
 
+    /// Opens the results panel for externally computed hits (the book reader searches documents,
+    /// not the bundled sources). The typed query becomes the active, submitted one.
+    pub fn set_results(&mut self, hits: Vec<Hit>, occurrences: usize) {
+        self.active = self.typing;
+        self.submitted = self.text.clone();
+        self.hits = hits;
+        self.occurrences = occurrences;
+        self.selected = 0;
+        self.open = true;
+        self.focus = true;
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.focus = false;
