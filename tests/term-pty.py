@@ -54,7 +54,9 @@ fcntl.ioctl(probe.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
 probe.send(b'q', 'restored')
 probe.p.wait(timeout=5)
 after = termios.tcgetattr(probe.slave)
-assert after[3] == probe.before[3] and after[0] == probe.before[0], \
+# BSD-only NOKERNINFO (Ctrl-T status line) is set by the macOS tty layer, not by input handling.
+NOKERNINFO = getattr(termios, 'NOKERNINFO', 0x20000000) if sys.platform == 'darwin' else 0
+assert after[3] & ~NOKERNINFO == probe.before[3] & ~NOKERNINFO and after[0] == probe.before[0], \
     f'termios not restored: iflag {probe.before[0]:#x}->{after[0]:#x}, lflag {probe.before[3]:#x}->{after[3]:#x}'
 assert probe.p.returncode == 0, probe.p.returncode
 
