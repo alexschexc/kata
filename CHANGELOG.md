@@ -6,7 +6,7 @@ never breaks anything.
 
 ## [Unreleased]
 
-## [0.4.0]
+## [0.4.0] - 2026-10-20
 
 Kata is now written in Rust. Output for every reference, plan and command line
 matches the last Zig release (0.3.1) byte for byte, and your saved progress,
