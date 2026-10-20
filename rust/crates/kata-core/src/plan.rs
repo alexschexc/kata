@@ -1,7 +1,7 @@
 //! Reading plans: JSON config, validation and per-day chapter assignments. Ported from
 //! `src/plan.zig`; validation rules and error behaviour are identical.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// `stream` indexes `Config::streams`; for library streams `chapter` is the 1-based reading
 /// unit, not a Bible chapter.
@@ -12,7 +12,7 @@ pub struct Chapter {
     pub stream: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Book {
     pub name: String,
@@ -21,22 +21,24 @@ pub struct Book {
 
 /// A library stream reads one ingested book (`library` = its file in the library folder) in
 /// `unit`s ("chapter" or "section"); its single book holds a display name and the unit count.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stream {
     pub books: Vec<Book>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub library: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Phase {
     pub days: u16,
     pub rates: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub name: String,

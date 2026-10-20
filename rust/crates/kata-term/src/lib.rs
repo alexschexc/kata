@@ -5,6 +5,7 @@ pub mod backend;
 pub mod book_reader;
 pub mod color;
 pub mod input;
+pub mod plan_builder;
 pub mod start_menu;
 pub mod theme;
 pub mod tui;

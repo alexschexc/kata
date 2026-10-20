@@ -20,6 +20,7 @@ pub mod library;
 pub mod paths;
 pub mod picker;
 pub mod plan;
+pub mod plan_builder;
 pub mod reading;
 pub mod reading_units;
 pub mod search;

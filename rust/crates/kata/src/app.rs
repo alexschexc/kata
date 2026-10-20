@@ -12,7 +12,9 @@ use kata_core::layout::{self, Row};
 use kata_core::library::{self, Location};
 use kata_core::paths::{self, Kind};
 use kata_core::picker::Action;
+use kata_core::plan_builder::LibraryOption;
 use kata_core::reading;
+use kata_core::reading_units::{self, Kind as UnitKind};
 use kata_core::search::Query;
 use kata_core::search::SearchState;
 use kata_core::source::{self, Reference};
@@ -428,6 +430,51 @@ fn search_books(
     Ok((Exit::Home, None))
 }
 
+/// Every converted book with its plan units, for the plan builder.
+fn library_options(tui: &Tui, shelf: &Shelf) -> Vec<LibraryOption> {
+    let _ = tui.status("Measuring chapters and sections of converted books…");
+    let mut out = Vec::new();
+    for (index, entry) in shelf.entries.iter().enumerate() {
+        let Ok(doc) = load_book(shelf, index) else {
+            continue;
+        };
+        let chapters = reading_units::units(&doc, UnitKind::Chapter);
+        let sections = reading_units::units(&doc, UnitKind::Section);
+        if chapters.is_empty() {
+            continue;
+        }
+        out.push(LibraryOption {
+            file: entry.file.clone(),
+            title: entry.title.clone(),
+            chapter_name: reading_units::chapter_name(&doc).to_string(),
+            section_name: reading_units::section_name(&doc).to_string(),
+            chapters: chapters.into_iter().map(|u| u.label).collect(),
+            sections: sections.into_iter().map(|u| u.label).collect(),
+        });
+    }
+    out
+}
+
+/// Runs the plan builder and selects the saved plan.
+fn build_plan(
+    tui: &mut Tui,
+    shelf: &Shelf,
+    plans: &mut Catalog,
+    user_plans: &Path,
+    preset: Option<&str>,
+) -> Result<(Option<usize>, String), Box<dyn Error>> {
+    let options = library_options(tui, shelf);
+    let saved = match kata_term::plan_builder::run(tui, user_plans, &options, preset) {
+        Err(error) => return Ok((None, format!("Plan builder failed: {error}."))),
+        Ok(None) => return Ok((None, "Plan builder closed without saving.".into())),
+        Ok(Some(path)) => path,
+    };
+    match plans.add_file(Path::new(&saved)) {
+        Ok(index) => Ok((Some(index), format!("Plan saved to {saved} and selected."))),
+        Err(error) => Ok((None, format!("Saved {saved} but cannot load it: {error}."))),
+    }
+}
+
 struct Session {
     title: String,
     rows: Vec<Row>,
@@ -610,6 +657,7 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
     };
     let mut override_query: Option<String> = initial_passage.map(str::to_string);
     let mut finder = SearchState::default();
+    let mut build_for: Option<String> = None;
     let mut shelf = Shelf::default();
     let home = cli::env_var("HOME").or_else(|| cli::env_var("USERPROFILE"));
     let folders_saved = match ingest::load_folders(Path::new(&config_home)) {
@@ -722,7 +770,8 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
                     continue;
                 };
                 if pick == choices.len() - 1 {
-                    notice = "Building plans is not yet available in the Rust build (plan builder port).".into();
+                    build_for = Some(file);
+                    active = Some(Choice::BuildPlan);
                 } else if pick > 0 {
                     notice = NO_BOOK_READER.into();
                 } else {
@@ -749,9 +798,18 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
             }
             Choice::BuildPlan => {
                 active = None;
-                notice =
-                    "Building plans is not yet available in the Rust build (plan builder port)."
-                        .into();
+                let (saved, message) = build_plan(
+                    &mut tui,
+                    &shelf,
+                    &mut plans,
+                    &user_plans,
+                    build_for.as_deref(),
+                )?;
+                if let Some(index) = saved {
+                    active = Some(Choice::Plan(index));
+                    build_for = None;
+                }
+                notice = message;
                 continue;
             }
         }
