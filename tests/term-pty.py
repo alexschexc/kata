@@ -54,7 +54,8 @@ fcntl.ioctl(probe.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
 probe.send(b'q', 'restored')
 probe.p.wait(timeout=5)
 after = termios.tcgetattr(probe.slave)
-assert after[3] == probe.before[3] and after[0] == probe.before[0], 'termios not restored'
+assert after[3] == probe.before[3] and after[0] == probe.before[0], \
+    f'termios not restored: iflag {probe.before[0]:#x}->{after[0]:#x}, lflag {probe.before[3]:#x}->{after[3]:#x}'
 assert probe.p.returncode == 0, probe.p.returncode
 
 # SIGTERM is caught (flag set, loop ends, terminal restored) rather than killing the process.
