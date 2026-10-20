@@ -60,6 +60,8 @@ pub fn size() -> io::Result<Size> {
 pub struct Terminal {
     #[cfg(unix)]
     old_handlers: [libc::sighandler_t; 3],
+    #[cfg(windows)]
+    console: windows_console::Saved,
 }
 
 #[cfg(unix)]
@@ -88,14 +90,18 @@ impl Terminal {
             }
             Ok(Terminal { old_handlers: old })
         }
-        #[cfg(not(unix))]
-        Ok(Terminal {})
+        #[cfg(windows)]
+        Ok(Terminal {
+            console: windows_console::enter(),
+        })
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+        #[cfg(windows)]
+        windows_console::leave(&self.console);
         #[cfg(unix)]
         for (signal, handler) in SIGNALS.into_iter().zip(self.old_handlers) {
             // SAFETY: restoring the handler returned by the earlier `signal` call.
@@ -165,6 +171,63 @@ pub fn read_byte() -> io::Result<Read> {
         Ok(Read::Byte(value))
     } else {
         Err(io::Error::other("TerminalRead"))
+    }
+}
+
+/// Output side of the Windows console: UTF-8 code page and VT escape processing (the Zig build
+/// set both). Failures are ignored: Windows Terminal already has VT on, and redirected output
+/// has no console to configure.
+#[cfg(windows)]
+mod windows_console {
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const CP_UTF8: u32 = 65001;
+    const ENABLE_PROCESSED_OUTPUT: u32 = 0x1;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x4;
+
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+        fn GetConsoleMode(handle: isize, mode: *mut u32) -> i32;
+        fn SetConsoleMode(handle: isize, mode: u32) -> i32;
+        fn GetConsoleOutputCP() -> u32;
+        fn SetConsoleOutputCP(code_page: u32) -> i32;
+    }
+
+    pub struct Saved {
+        mode: Option<u32>,
+        code_page: u32,
+    }
+
+    pub fn enter() -> Saved {
+        // SAFETY: plain Win32 console calls on the process's own standard handle.
+        unsafe {
+            let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            let mut mode = 0u32;
+            let saved_mode = (GetConsoleMode(handle, &mut mode) != 0).then_some(mode);
+            if saved_mode.is_some() {
+                SetConsoleMode(
+                    handle,
+                    mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+                );
+            }
+            let code_page = GetConsoleOutputCP();
+            SetConsoleOutputCP(CP_UTF8);
+            Saved {
+                mode: saved_mode,
+                code_page,
+            }
+        }
+    }
+
+    pub fn leave(saved: &Saved) {
+        // SAFETY: restores the values read in `enter`.
+        unsafe {
+            if let Some(mode) = saved.mode {
+                SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), mode);
+            }
+            if saved.code_page != 0 {
+                SetConsoleOutputCP(saved.code_page);
+            }
+        }
     }
 }
 
@@ -250,5 +313,25 @@ mod tests {
         if !io::stdin().is_terminal() {
             assert!(Terminal::new().is_err());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_keys_translate_to_the_bytes_a_unix_terminal_sends() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use windows_input::key_bytes;
+        let none = KeyModifiers::NONE;
+        assert_eq!(key_bytes(KeyCode::Char('j'), none), b"j");
+        assert_eq!(key_bytes(KeyCode::Char('ά'), none), "ά".as_bytes());
+        assert_eq!(key_bytes(KeyCode::Char('d'), KeyModifiers::CONTROL), [4]);
+        assert_eq!(key_bytes(KeyCode::Char('u'), KeyModifiers::CONTROL), [21]);
+        assert_eq!(key_bytes(KeyCode::Enter, none), b"\r");
+        assert_eq!(key_bytes(KeyCode::Backspace, none), [0x7f]);
+        assert_eq!(key_bytes(KeyCode::Esc, none), [0x1b]);
+        assert_eq!(key_bytes(KeyCode::Up, none), b"\x1b[A");
+        assert_eq!(key_bytes(KeyCode::Left, none), b"\x1b[D");
+        assert_eq!(key_bytes(KeyCode::Right, KeyModifiers::SHIFT), b"\x1b[1;2C");
+        assert_eq!(key_bytes(KeyCode::Left, KeyModifiers::SHIFT), b"\x1b[1;2D");
+        assert!(key_bytes(KeyCode::F(5), none).is_empty());
     }
 }

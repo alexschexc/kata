@@ -2,7 +2,7 @@
 
 Kata is a terminal reader written in Rust (ported from the Zig release V0.3.1). It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
 
-Status: beta (v0.3.1). Linux is the tested platform. The macOS (Apple silicon) and Windows (x64) builds are cross-compiled and have not been verified on real machines.
+Status: beta. Linux is tested locally. The macOS (Apple silicon) and Windows (x64) builds are built and smoke-tested on native CI runners (GitHub Actions), not yet by hand on real machines.
 
 ## What it does
 
@@ -22,8 +22,10 @@ Status: beta (v0.3.1). Linux is the tested platform. The macOS (Apple silicon) a
 Download the build for your system from the GitLab release page.
 
 - **Linux (x86-64):** the static `kata` binary. Put it on your `PATH` and run `kata`.
-- **macOS (Apple silicon):** unpack `kata-v0.3.1-macos-aarch64.tar.gz` and double-click `Run kata.command`. The binary is not Developer ID signed or notarized, so macOS download policies may block it until you allow it; this has not been tested on a Mac.
+- **macOS (Apple silicon):** run the `kata` binary from a terminal. It is not Developer ID signed or notarized, so macOS download policies may block it until you allow it.
 - **Windows (x64):** run `kata.exe` in a terminal.
+
+Themes: Library → Theme switches between Ethereal (default), Aetheria and Sedate; `KATA_THEME` overrides it for one run.
 
 From source, Rust port (toolchain pinned in `rust/rust-toolchain.toml`):
 
@@ -51,7 +53,7 @@ zig build -Dtarget=aarch64-macos     -Doptimize=ReleaseSmall -Dstrip=true --pref
 zig build -Dtarget=x86_64-windows    -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/windows-x64
 ```
 
-`zig-out/bin/kata` is tracked in git and is meant to hold the release Linux build; a plain `zig build` overwrites it with a debug build. `scripts/install-local.sh` builds the static release into a scratch directory, smoke-tests it, and replaces `~/.local/bin/kata` without touching `zig-out/`.
+`zig-out/bin/kata` is tracked in git and is meant to hold the release Linux build; a plain `zig build` overwrites it with a debug build. `scripts/install-local.sh` builds the static Rust release into a scratch directory, smoke-tests it, and replaces `~/.local/bin/kata`.
 
 ## Using it
 

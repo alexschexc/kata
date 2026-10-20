@@ -27,3 +27,9 @@ jobs:
       - name: No HOME set (PACKAGING.md Windows check)
         run: |
           env -u HOME -u XDG_STATE_HOME -u XDG_CONFIG_HOME "$GITHUB_WORKSPACE/rust/target/release/kata.exe" --check-plan | head -3
+      - name: Keep the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kata-windows-x64
+          path: rust/target/release/kata.exe
+          retention-days: 14

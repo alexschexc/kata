@@ -29,8 +29,10 @@ Normal builds need only Zig 0.16.0; sources and generated indexes are included i
 Build a stripped static x86-64 Linux executable:
 
 ```sh
-zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true
+scripts/rust-cross-build.sh   # musl static Linux, macOS arm64, Windows x64; Zig 0.16.0 is the linker only
 ```
+
+(The Zig implementation was built with `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`; it is frozen at tag `V0.3.1`.)
 
 `file` reports a statically linked ELF executable; program headers contain no dynamic interpreter. Copying just this executable is sufficient for supported Linux terminals; writable progress files are created separately in the user's state directory. Optional custom plans are still separate user files, not required runtime dependencies.
 
@@ -46,12 +48,9 @@ All checks use isolated temporary state; they do not mutate normal reading progr
 
 ## Cross-platform boundaries
 
-A separate executable is needed for each OS/CPU. After Linux confirmation, Windows x86-64 and Apple Silicon macOS executables were successfully cross-compiled. Zig uses its own Mach-O linker for macOS rather than LLD; ELF and PE builds keep LLD. Windows has a native console/input/terminal backend rather than POSIX termios/ioctl/signals. Cross-build headers, full embedded corpora/provenance, and OS-only dependencies passed inspection; the updated Linux ReleaseSafe suite passed 80 tests. Native Windows/macOS execution remains unverified. The previously confirmed installed Linux binary is unchanged.
+A separate executable is needed for each OS/CPU. After Linux confirmation, Windows x86-64 and Apple Silicon macOS executables were successfully cross-compiled. Zig uses its own Mach-O linker for macOS rather than LLD; ELF and PE builds keep LLD. Windows uses crossterm key events translated to VT bytes, with the console switched to UTF-8 and VT output on start and restored on exit (`windows_console` in `kata-term/src/backend.rs`). Cross-build headers, full embedded corpora/provenance, and OS-only dependencies passed inspection; the updated Linux ReleaseSafe suite passed 80 tests. Native Windows/macOS execution remains unverified. The previously confirmed installed Linux binary is unchanged.
 
-```sh
-zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/macos-arm64
-zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/windows-x64
-```
+The release macOS and Windows binaries come from native runners (`.github/workflows/macos-smoke.yml`, `windows-smoke.yml`), which keep each build as an artifact after its smoke tests pass. `scripts/rust-cross-build.sh` produces the same targets from Linux.
 
 `tests/cross-artifacts.py` checks actual executable headers, architecture, OS-library dependencies, and the complete embedded corpus bytes/provenance for both targets. This is artifact inspection, not native execution. No macOS machine or Windows/Wine runner is available in this Linux environment.
 

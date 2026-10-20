@@ -1,6 +1,6 @@
 # Kata: Zig to Rust appraisal and cross-compilation migration path
 
-Status: appraisal only. No Rust code for Kata exists yet. Decision (2026-10-18): proceed with
+Status: migration complete (2026-10-19, released as 0.4.0). The text below is the original appraisal and is kept as written. Decision (2026-10-18): proceed with
 the migration, because the goal is to consolidate on JVM languages plus Rust only. Work starts
 the next day; Phase 0 first. Everything under "Measured"
 was checked on 2026-10-18; everything under "Estimate" is judgement.

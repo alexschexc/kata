@@ -25,59 +25,9 @@ variables:
 secret_detection:
   stage: secret-detection
 
-# Zig build: cross-compiles all three targets on Linux (KAT-7).
-zig-build:
-  stage: build
-  image: python:3.13-slim
-  before_script:
-  - apt-get update -qq && apt-get install -y -qq xz-utils curl binutils >/dev/null
-  - curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz
-  - echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
-  - tar -xJf /tmp/zig.tar.xz -C /opt && export PATH=/opt/zig-x86_64-linux-$ZIG_VERSION:$PATH
-  script:
-  - zig version
-  - zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/linux-x64
-  - zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/macos-arm64
-  - zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/windows-x64
-  - python tests/cross-artifacts.py
-  artifacts:
-    paths:
-    - zig-out/linux-x64/bin/kata
-    - zig-out/macos-arm64/bin/kata
-    - zig-out/windows-x64/bin/kata.exe
-    expire_in: 1 week
-
-linux-smoke:
-  stage: test
-  image: python:3.13-slim
-  needs: [zig-build]
-  script:
-  - python tests/target-smoke.py "$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata"
-  - KATA_BIN="$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata" python tests/color-fallback-pty.py
-
-# GitLab SaaS macOS runners are not available to this account
-# (no_matching_runner), so the real macOS run lives in
-# .github/workflows/macos-smoke.yml on a GitHub mirror. Kept here as an
-# optional manual job in case runners become available.
-macos-smoke:
-  stage: test
-  when: manual
-  allow_failure: true
-  tags: [saas-macos-medium-m1]
-  image: macos-14-xcode-15
-  needs: [zig-build]
-  script:
-  - chmod +x zig-out/macos-arm64/bin/kata
-  - python3 tests/target-smoke.py "$CI_PROJECT_DIR/zig-out/macos-arm64/bin/kata"
-  - KATA_BIN="$CI_PROJECT_DIR/zig-out/macos-arm64/bin/kata" python3 tests/color-fallback-pty.py
-
-# First native Windows execution of Kata. Needs GitLab SaaS Windows runners.
-windows-smoke:
-  stage: test
-  tags: [saas-windows-medium-amd64]
-  needs: [zig-build]
-  script:
-  - python tests/target-smoke.py "$env:CI_PROJECT_DIR\zig-out\windows-x64\bin\kata.exe"
+# The Zig implementation is frozen at tag V0.3.1 and no longer built here. macOS is verified on
+# a native runner in .github/workflows/macos-smoke.yml (GitLab SaaS has no macOS runner for this
+# account); Windows is also covered by .github/workflows/windows-smoke.yml.
 
 # ---- Rust port (Linear project "Port Kata to Rust") ----
 
@@ -120,11 +70,12 @@ rust-build:
     - rust/target/x86_64-pc-windows-gnu/release/kata.exe
     expire_in: 1 week
 
-# Inspect the cross-built binaries and compare the Linux one byte-for-byte with the Zig build.
+# Inspect the cross-built binaries. The byte-for-byte comparison with the Zig build
+# (tests/rust-dump-diff.py against tag V0.3.1) needs a Zig build of that tag and is run locally.
 rust-verify:
   stage: test
   image: python:3.13-slim
-  needs: [zig-build, rust-build]
+  needs: [rust-build]
   before_script:
   - apt-get update -qq && apt-get install -y -qq binutils file >/dev/null
   script:
@@ -133,7 +84,7 @@ rust-verify:
   - python tests/provenance-check.py "$CI_PROJECT_DIR/rust/target/aarch64-apple-darwin/release/kata" --no-run
   - python tests/provenance-check.py "$CI_PROJECT_DIR/rust/target/x86_64-pc-windows-gnu/release/kata.exe" --no-run
   - python tests/target-smoke.py "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
-  - python tests/rust-dump-diff.py "$CI_PROJECT_DIR/zig-out/linux-x64/bin/kata" "$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata"
+  - KATA_BIN="$CI_PROJECT_DIR/rust/target/x86_64-unknown-linux-musl/release/kata" python tests/color-fallback-pty.py
 
 # Native Windows execution of the Rust build.
 rust-windows-smoke:

@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# Build the standalone release binary and install it to ~/.local/bin/kata,
-# which the app-launcher entry (kata.desktop) runs.
+# Build the standalone static Rust release binary (linux-musl) and install it to
+# ~/.local/bin/kata, which the app-launcher entry (kata.desktop) runs.
+# Zig 0.16.0 (mise.toml) is used as the linker only, via cargo-zigbuild.
 # Usage: scripts/install-local.sh [destination]
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${1:-$HOME/.local/bin/kata}"
-prefix="$(mktemp -d "${TMPDIR:-/tmp}/kata-install.XXXXXX")"
-trap 'rm -rf "$prefix"' EXIT
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/kata-install.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
 
-cd "$root"
-# Build into a scratch prefix so the tracked zig-out/ binary is left alone.
-mise exec -- zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true --prefix "$prefix"
-built="$prefix/bin/kata"
+cd "$root/rust"
+target=x86_64-unknown-linux-musl
+mise exec -- cargo zigbuild --release --locked --target "$target" --target-dir "$scratch/target"
+built="$scratch/target/$target/release/kata"
 
-# Smoke check with isolated state before replacing the installed copy.
-state="$prefix/state.json"
-"$built" --state "$state" --passage 'John:1:1' --dump | grep -q 'In the beginning was the Word'
+# Static check, then a smoke run with isolated state before replacing the installed copy.
+file "$built" | grep -q "statically linked"
+if readelf -d "$built" 2>/dev/null | grep -q NEEDED; then echo "FAIL: dynamic NEEDED entries" >&2; exit 1; fi
+"$built" --state "$scratch/state.json" --passage 'John:1:1' --dump | grep -q 'In the beginning was the Word'
 
 mkdir -p "$(dirname "$dest")"
 install -m 755 "$built" "$dest.new"

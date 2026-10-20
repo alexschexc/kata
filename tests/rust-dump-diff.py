@@ -26,6 +26,8 @@ with tempfile.TemporaryDirectory(prefix='kata-dump-diff-') as folder:
         global compared, failures
         compared += 1
         zig, rust = run(ZIG, arguments), run(RUST, arguments)
+        if arguments == ['--help']:  # the only intended difference: the Zig banner said "prototype"
+            zig = (zig[0], zig[1].replace(b' (Zig prototype)', b'', 1))
         if zig != rust:
             failures += 1
             print('DIFF', arguments, 'exit', zig[0], rust[0], 'bytes', len(zig[1]), len(rust[1]))
