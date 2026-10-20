@@ -4,6 +4,7 @@
 
 use crate::cli::{self, GOSPELS, OPTINA};
 use crate::clock;
+use kata_core::bundled::Selection;
 use kata_core::catalog::{self, Catalog, Entry};
 use kata_core::document::{self, Document};
 use kata_core::graphics::Capabilities;
@@ -42,6 +43,9 @@ struct Shelf {
     entries: Vec<IndexEntry>,
     books: Vec<Book>,
     notice: Option<String>,
+    /// Ingested Psalter as Psalms verses, built once per shelf.
+    psalter: Option<Vec<source::Verse>>,
+    psalter_loaded: bool,
 }
 
 fn shelve(shelf: &mut Shelf, entries: Vec<IndexEntry>) {
@@ -54,6 +58,8 @@ fn shelve(shelf: &mut Shelf, entries: Vec<IndexEntry>) {
         })
         .collect();
     shelf.entries = entries;
+    shelf.psalter = None;
+    shelf.psalter_loaded = false;
 }
 
 fn has_library(entry: &Entry) -> bool {
@@ -793,9 +799,85 @@ fn plan_hub(
     Ok(HubExit::Quit)
 }
 
+/// The ingested Psalter as Psalms verses (Greek/Latin numbering: psalm from the heading's arabic
+/// number, verse numbers as printed). Superscriptions are not verses and are left out.
+fn psalter_verses(shelf: &mut Shelf) -> Option<Vec<source::Verse>> {
+    if !shelf.psalter_loaded {
+        shelf.psalter_loaded = true;
+        shelf.psalter = build_psalter(shelf);
+    }
+    shelf.psalter.clone()
+}
+
+fn build_psalter(shelf: &Shelf) -> Option<Vec<source::Verse>> {
+    let index = shelf
+        .entries
+        .iter()
+        .position(|entry| entry.title.to_ascii_lowercase().contains("psalter"))?;
+    let doc = load_book(shelf, index).ok()?;
+    let mut verses = Vec::new();
+    for chapter in &doc.chapters {
+        let mut psalm: u16 = 0;
+        for block in &chapter.blocks {
+            if block.kind == document::Kind::Heading {
+                psalm = match book_reader::psalm_number(&block.text) {
+                    Some(n) => n,
+                    None if block.level <= 1 => 0,
+                    None => psalm,
+                };
+                continue;
+            }
+            if psalm == 0 || block.kind != document::Kind::Verse || block.verse == 0 {
+                continue;
+            }
+            verses.push(source::Verse {
+                book: "Psalms".into(),
+                chapter: psalm,
+                number: block.verse.min(u32::from(u16::MAX)) as u16,
+                text: block.text.clone(),
+                label: None,
+            });
+        }
+    }
+    (!verses.is_empty()).then_some(verses)
+}
+
+/// Verses of `edition` within `reference` (Psalms chapters selected by the reference's own
+/// chapter/verse selection).
+fn edition_verses(
+    edition: &[source::Verse],
+    reference: &Reference,
+) -> Result<Vec<source::Verse>, Box<dyn Error>> {
+    if reference.book != "Psalms" {
+        return Ok(Vec::new());
+    }
+    let colon = reference.query.find(':').unwrap_or(reference.query.len());
+    let selection = Selection::new(&reference.query[colon..])?;
+    Ok(edition
+        .iter()
+        .filter(|verse| selection.matches(verse.chapter, verse.number))
+        .cloned()
+        .collect())
+}
+
+fn editions_path(base: &str) -> String {
+    format!("{base}.editions")
+}
+
+fn load_editions(base: &str) -> [u8; 3] {
+    let mut editions = [0u8; 3];
+    if let Ok(bytes) = std::fs::read(editions_path(base)) {
+        for (slot, &byte) in editions.iter_mut().zip(bytes.iter().take(3)) {
+            *slot = u8::from(byte == b'1');
+        }
+    }
+    editions
+}
+
 struct Session {
     title: String,
     rows: Vec<Row>,
+    english_edition: bool,
 }
 
 /// Rows for a plan day or a passage, resetting positions when the scope changed.
@@ -804,6 +886,7 @@ fn prepare(
     state: &mut State,
     date: i32,
     passage: Option<&str>,
+    english: Option<&[source::Verse]>,
 ) -> Result<Session, Box<dyn Error>> {
     let mut references: Vec<Reference> = Vec::new();
     let (title, scope);
@@ -820,6 +903,7 @@ fn prepare(
             return Ok(Session {
                 title: plan.name().to_string(),
                 rows: Vec::new(),
+                english_edition: false,
             });
         }
         for chapter in plan.assignments(ordinal)? {
@@ -841,13 +925,27 @@ fn prepare(
         state.scope_hash = scope;
     }
     let mut rows = Vec::new();
+    let mut used_edition = false;
     for reference in &references {
-        rows.extend(layout::align_verses(&source::streams(reference)?)?);
+        let mut streams = source::streams(reference)?;
+        // The Psalter covers only the Psalms; elsewhere column 1 stays KJV.
+        if let Some(edition) = english
+            && state.edition[0] == 1
+            && reference.book == "Psalms"
+        {
+            streams[0] = edition_verses(edition, reference)?;
+            used_edition = true;
+        }
+        rows.extend(layout::align_verses(&streams)?);
     }
     if rows.is_empty() {
         return failure("NoVerses");
     }
-    Ok(Session { title, rows })
+    Ok(Session {
+        title,
+        rows,
+        english_edition: used_edition,
+    })
 }
 
 /// Reading plans list: pick, build or remove. Returns the next mode when a plan is chosen.
@@ -973,6 +1071,8 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
     let mut override_query: Option<String> = initial_passage.map(str::to_string);
     let mut finder = SearchState::default();
     let mut build_for: Option<String> = None;
+    // Column editions are one app-wide choice (not per reading location).
+    let mut editions = load_editions(base);
     let mut shelf = Shelf::default();
     let home = cli::env_var("HOME").or_else(|| cli::env_var("USERPROFILE"));
     let folders_saved = match ingest::load_folders(Path::new(&config_home)) {
@@ -1176,24 +1276,49 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
             return failure("InvalidFreeState");
         }
         let date = clock::today().ok_or("ClockUnavailable")?;
-        state.edition = [0; 3];
-        let mut session =
-            match prepare(&plans.entries[selected], &mut state, date, query.as_deref()) {
-                Ok(session) => session,
-                Err(error) => {
-                    notice = format!("Cannot load reading: {error}. Progress was not changed.");
-                    active = None;
-                    continue;
-                }
-            };
+        let psalter = psalter_verses(&mut shelf);
+        state.edition = if psalter.is_none() { [0; 3] } else { editions };
+        let mut session = match prepare(
+            &plans.entries[selected],
+            &mut state,
+            date,
+            query.as_deref(),
+            psalter.as_deref(),
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                notice = format!("Cannot load reading: {error}. Progress was not changed.");
+                active = None;
+                continue;
+            }
+        };
         if let Some(at) = free {
             reading::anchor(&session.rows, &mut state, at)?;
             session.title = format!("{} · free reading", session.title);
             last_free = Location { verse: None, ..at };
             active = Some(Choice::Free(last_free));
         }
-        finder.names = ["kjv".into(), "grb".into(), "vul".into()];
-        finder.editions = [None, None, None];
+        let names: [String; 3] = [
+            if session.english_edition {
+                "htm"
+            } else {
+                "kjv"
+            }
+            .into(),
+            "grb".into(),
+            "vul".into(),
+        ];
+        finder.names = names.clone();
+        finder.editions = [
+            if session.english_edition {
+                psalter.clone()
+            } else {
+                None
+            },
+            None,
+            None,
+        ];
+        let in_psalms = session.rows.first().is_some_and(|row| row.book == "Psalms");
         let action = {
             let mut options = Options::new(&session.title, PathBuf::from(&path));
             options.plan_mode = free.is_none();
@@ -1203,8 +1328,15 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
             options.plan = Some(&plans.entries[selected].plan);
             options.notice = notice.clone();
             options.search = Some(&mut finder);
+            options.editions = [if psalter.is_some() && in_psalms { 2 } else { 1 }, 1, 1];
+            options.names = names;
             tui.read(&session.rows, &mut state, options)?
         };
+        if state.edition != editions {
+            editions = state.edition;
+            let text: Vec<u8> = editions.iter().map(|e| b'0' + e).collect();
+            let _ = std::fs::write(editions_path(base), text);
+        }
         state.edition = [0; 3];
         state::save(Path::new(&path), &state)?;
         if free.is_some() {
@@ -1293,8 +1425,14 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
             Some(at) => Some(library::reference(at)?),
             None => None,
         };
-        changed.edition = [0; 3];
-        let validated = match prepare(target_entry, &mut changed, date, target_query.as_deref()) {
+        changed.edition = editions;
+        let validated = match prepare(
+            target_entry,
+            &mut changed,
+            date,
+            target_query.as_deref(),
+            psalter_verses(&mut shelf).as_deref(),
+        ) {
             Ok(validated) => validated,
             Err(error) => {
                 notice = format!("Cannot load requested reading: {error}. Previous view retained.");
@@ -1308,6 +1446,7 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
             finder.reveal = false;
             continue;
         }
+        changed.edition = [0; 3];
         state::save(Path::new(&target_path), &changed)?;
         let target_id = target_entry.id.clone();
         if let Some(at) = target_free {
