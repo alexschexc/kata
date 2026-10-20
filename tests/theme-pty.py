@@ -5,7 +5,7 @@ import fcntl, os, pty, select, struct, subprocess, sys, tempfile, termios, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata'))
+BIN = os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata'))
 home = tempfile.mkdtemp()
 PAPER = {'ethereal': b'48;2;6;11;30m', 'aetheria': b'48;2;14;9;29m', 'sedate': b'48;2;28;29;33m'}
 

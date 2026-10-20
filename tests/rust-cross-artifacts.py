@@ -14,7 +14,7 @@ inputs = {'linux-x64-musl': RELEASE/'x86_64-unknown-linux-musl/release/kata',
           'macos-arm64': RELEASE/'aarch64-apple-darwin/release/kata',
           'windows-x64': RELEASE/'x86_64-pc-windows-gnu/release/kata.exe'}
 expect_corpora = '--expect-corpora' in sys.argv[1:]
-metadata = json.loads((ROOT/'src/data/provenance.json').read_text())
+metadata = json.loads((ROOT/'data/provenance.json').read_text())
 # Rust std on macOS links libiconv/libcharset in addition to libSystem; all are system libraries.
 MAC_ALLOWED = {'/usr/lib/libSystem.B.dylib', '/usr/lib/libiconv.2.dylib', '/usr/lib/libcharset.1.dylib'}
 WIN_SYSTEM = {'kernel32.dll', 'msvcrt.dll', 'ntdll.dll', 'advapi32.dll', 'ws2_32.dll', 'bcrypt.dll', 'bcryptprimitives.dll',
@@ -27,7 +27,7 @@ for target, path in inputs.items():
                'sha256': hashlib.sha256(data).hexdigest(), 'executed_on_target': False}
     if expect_corpora:
         for source, entry in metadata['sources'].items():
-            raw = (ROOT/'src/data'/entry['member']).read_bytes()
+            raw = (ROOT/'data'/entry['member']).read_bytes()
             assert hashlib.sha256(raw).hexdigest() == entry['tsv_sha256']
             assert raw in data, (target, source, 'exact corpus missing')
             assert entry['tsv_sha256'].encode() in data, 'embedded provenance missing'

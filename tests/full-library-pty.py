@@ -3,7 +3,7 @@ from pathlib import Path
 import fcntl, json, os, pty, select, signal, struct, subprocess, sys, tempfile, termios, time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata')))
 
 class UI:
     def __init__(self, state, env, *args):

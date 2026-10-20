@@ -1,3 +1,5 @@
+> Historical: the original Zig-era design notes. The project is now written in Rust; see README.md.
+
 # Kata — Initial Design Brief
 
 Status: concept with initial source inspection complete; no Kata prototype exists. Implementation language: Zig. Installed compiler verified: Zig 0.16.0.

@@ -7,7 +7,7 @@ from pathlib import Path
 import fcntl, json, os, pty, re, select, shutil, struct, subprocess, tempfile, termios, time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata')))
 EPUB = ROOT / 'examplePubs' / 'buildingmicroservices2ndedition.epub'
 CLEAR = b'\x1b[H\x1b[2J'
 SIXEL = re.compile(rb'\x1bP0;1;0q"1;1;(\d+);(\d+).*?\x1b\x5c', re.S)

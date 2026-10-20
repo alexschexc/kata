@@ -12,7 +12,7 @@ from pathlib import Path
 import fcntl, os, pty, re, select, signal, struct, subprocess, sys, tempfile, termios, time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata')))
 TRUECOLOR = re.compile(rb'\x1b\[[0-9;]*\b[34]8;2;')
 
 

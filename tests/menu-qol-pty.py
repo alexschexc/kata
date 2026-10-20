@@ -5,7 +5,7 @@ import fcntl, json, os, pty, select, struct, tempfile, termios, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', ROOT / 'zig-out/bin/kata'))
+BIN = Path(os.environ.get('KATA_BIN', ROOT / 'rust/target/release/kata'))
 SAMPLES = ['thinklikeaprogrammer.epub', 'buildingmicroservices2ndedition.epub']
 
 PLAN = {'name': 'Throwaway', 'repeat': True, 'streams': [{'books': [{'name': 'John', 'chapters': 21}]}],

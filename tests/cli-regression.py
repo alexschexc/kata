@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-binary = Path(os.environ.get('KATA_BIN', str(root / "zig-out/bin/kata")))
+binary = Path(os.environ.get('KATA_BIN', str(root / "rust/target/release/kata")))
 
 def run(*args, ok=True):
     result = subprocess.run([str(binary), *map(str, args)], cwd=root, capture_output=True, text=True, timeout=30)

@@ -5,7 +5,7 @@ from pathlib import Path
 import json, os, re, subprocess, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT/'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT/'rust/target/release/kata')))
 TOOLS = ('kjv', 'grb', 'vul')
 
 def run(args, env):

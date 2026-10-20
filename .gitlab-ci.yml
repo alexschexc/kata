@@ -25,7 +25,7 @@ variables:
 secret_detection:
   stage: secret-detection
 
-# The Zig implementation is frozen at tag V0.3.1 and no longer built here. macOS is verified on
+# The earlier Zig implementation lives at tag V0.3.1 and is no longer built here. macOS is verified on
 # a native runner in .github/workflows/macos-smoke.yml (GitLab SaaS has no macOS runner for this
 # account); Windows is also covered by .github/workflows/windows-smoke.yml.
 
@@ -70,8 +70,8 @@ rust-build:
     - rust/target/x86_64-pc-windows-gnu/release/kata.exe
     expire_in: 1 week
 
-# Inspect the cross-built binaries. The byte-for-byte comparison with the Zig build
-# (tests/rust-dump-diff.py against tag V0.3.1) needs a Zig build of that tag and is run locally.
+# Inspect the cross-built binaries. (The one-off byte-for-byte parity diffs against the Zig
+# build were run during the port and live in git history, e.g. tests/rust-dump-diff.py.)
 rust-verify:
   stage: test
   image: python:3.13-slim

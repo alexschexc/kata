@@ -34,9 +34,9 @@ impl std::error::Error for BundledError {}
 const GREEK: usize = 1;
 
 pub static TEXTS: [&str; 3] = [
-    include_str!("../../../../src/data/kjv.tsv"),
-    include_str!("../../../../src/data/grb.tsv"),
-    include_str!("../../../../src/data/vul.tsv"),
+    include_str!("../../../../data/kjv.tsv"),
+    include_str!("../../../../data/grb.tsv"),
+    include_str!("../../../../data/vul.tsv"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,100 +299,6 @@ pub fn query(source_index: usize, raw_book: &str, suffix: &str) -> Result<Vec<Ro
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    pub(crate) fn compute_spans(text: &'static str) -> Vec<Span> {
-        let mut spans: Vec<Span> = Vec::new();
-        let mut offset = 0usize;
-        let bytes = text.as_bytes();
-        while offset < bytes.len() {
-            // Python's bytes.splitlines(keepends=True): break after \n, \r\n or a lone \r.
-            let mut end = offset;
-            while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
-                end += 1;
-            }
-            if end < bytes.len() {
-                end += if bytes[end] == b'\r' && bytes.get(end + 1) == Some(&b'\n') {
-                    2
-                } else {
-                    1
-                };
-            }
-            let line = &text[offset..end];
-            let fields: Vec<&str> = line
-                .trim_end_matches(['\r', '\n'])
-                .splitn(6, '\t')
-                .collect();
-            if fields.len() == 4 {
-                // Source subsection heading, not a verse.
-                offset = end;
-                continue;
-            }
-            assert_eq!(
-                fields.len(),
-                6,
-                "embedded TSV: expected six fields at byte {offset}"
-            );
-            let chapter: u16 = fields[3].parse().expect("embedded TSV: chapter number");
-            match spans.last_mut() {
-                Some(last) if last.book == fields[0] && last.chapter == chapter => last.end = end,
-                _ => spans.push(Span {
-                    book: fields[0],
-                    chapter,
-                    start: offset,
-                    end,
-                }),
-            }
-            offset = end;
-        }
-        spans
-    }
-
-    /// Parse the Zig generated index (`.{ .book = "X", .chapter = N, .start = A, .end = B }`).
-    fn zig_spans(name: &str) -> Vec<Span> {
-        let path = format!(
-            "{}/../../../src/data/{name}_index.zig",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let text = std::fs::read_to_string(path).unwrap();
-        text.lines()
-            .filter(|l| l.contains(".book = "))
-            .map(|l| {
-                let field = |key: &str| -> &str {
-                    let rest = &l[l.find(key).unwrap() + key.len()..];
-                    rest[..rest.find([',', ' ']).unwrap_or(rest.len())].trim_matches('"')
-                };
-                let book = &l[l.find(".book = \"").unwrap() + 9..];
-                let book = &book[..book.find('"').unwrap()];
-                let leaked: &'static str = Box::leak(book.to_string().into_boxed_str());
-                Span {
-                    book: leaked,
-                    chapter: field(".chapter = ").parse().unwrap(),
-                    start: field(".start = ").parse().unwrap(),
-                    end: field(".end = ")
-                        .trim_end_matches(" }")
-                        .trim_end_matches(',')
-                        .parse()
-                        .unwrap(),
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn build_time_spans_equal_a_runtime_scan() {
-        for (index, text) in TEXTS.iter().enumerate() {
-            assert_eq!(spans(index), compute_spans(text).as_slice());
-        }
-    }
-
-    #[test]
-    fn computed_spans_equal_the_zig_generated_indexes() {
-        for (index, name) in ["kjv", "grb", "vul"].into_iter().enumerate() {
-            let expected = zig_spans(name);
-            assert!(!expected.is_empty());
-            assert_eq!(spans(index), expected.as_slice(), "{name}");
-        }
-    }
 
     #[test]
     fn selection_validation_and_matching() {

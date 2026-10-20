@@ -1,3 +1,5 @@
+> Historical: this plan names the Zig source files (`src/*.zig`) of tag `V0.3.1`. The Rust equivalents live under `rust/crates/`.
+
 # EPUB ingest — development plan (next push)
 
 Status (2026-10-09 evening): ingest WORKS end to end and is installed.

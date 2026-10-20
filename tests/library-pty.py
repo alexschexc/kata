@@ -4,7 +4,7 @@ import fcntl, json, os, pty, select, shutil, struct, tempfile, termios, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', ROOT / 'zig-out/bin/kata'))
+BIN = Path(os.environ.get('KATA_BIN', ROOT / 'rust/target/release/kata'))
 PSALTER = ROOT / 'examplePubs/The Psalter According to the Seventy - Holy Transfiguration Monastery (1).epub'
 OTHER = ROOT / 'examplePubs/thinklikeaprogrammer.epub'
 assert PSALTER.exists() and OTHER.exists(), 'sample EPUBs required'

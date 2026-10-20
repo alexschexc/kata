@@ -1,6 +1,5 @@
 [tools]
-# Zig 0.16.0 is the linker for cargo-zigbuild (cross builds) and builds the frozen Zig
-# reference (tag V0.3.1). Kata itself is built with rust/.
+# Zig 0.16.0 is only the linker for cargo-zigbuild (cross builds). Kata itself is Rust (rust/).
 zig = "0.16.0"
 rust = { version = "1.98.0", profile = "minimal", components = "rustfmt,clippy", targets = "x86_64-unknown-linux-musl,aarch64-apple-darwin,x86_64-pc-windows-gnu" }
 "cargo:cargo-zigbuild" = "0.23.4"

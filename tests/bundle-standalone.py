@@ -3,7 +3,7 @@ from pathlib import Path
 import json, os, shutil, subprocess, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-original = Path(os.environ.get('KATA_BIN', str(ROOT/'zig-out/bin/kata')))
+original = Path(os.environ.get('KATA_BIN', str(ROOT/'rust/target/release/kata')))
 with tempfile.TemporaryDirectory(prefix='kata-standalone-') as folder:
     tmp = Path(folder)
     binary = tmp/'kata'

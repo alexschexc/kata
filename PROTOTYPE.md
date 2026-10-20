@@ -1,29 +1,28 @@
 # Kata prototype
 
-Kata is a Zig terminal reader with the original installed `kjv`, `grb`, and `vul` TSV datasets embedded in the executable. Native Zig code selects their actual text; no source command or substitute dataset is used at runtime.
+Kata is a Rust terminal reader with the original installed `kjv`, `grb`, and `vul` TSV datasets embedded in the executable. Native code selects their actual text; no source command or substitute dataset is used at runtime.
 
 ## Build and review
 
-Build requirements: Zig 0.16.0 and libc support supplied by Zig's toolchain. Runtime requirements: a Linux/POSIX terminal and writable state directory. The bundled source files and indexes are included in the project; normal builds need neither Python nor installed source commands. The build uses Zig's LLVM/LLD backend; this avoids the native linker's incompatibility with the host's newer glibc SFrame relocations.
+Build requirements: the Rust toolchain pinned in `rust/rust-toolchain.toml`; Zig 0.16.0 only as the linker for cross-builds. Runtime requirements: a terminal and a writable state directory. The bundled source files are in `data/`; normal builds need neither Python nor installed source commands.
 
 From this directory:
 
 ```sh
-zig build
-zig build test --summary all
-./zig-out/bin/kata --passage 'John:1'
+cd rust && cargo build --release --locked && cargo test --locked && cd ..
+./rust/target/release/kata --passage 'John:1'
 ```
 
 Open the library and choose a reading mode:
 
 ```sh
-./zig-out/bin/kata
+./rust/target/release/kata
 ```
 
 For a review without touching your usual progress, select a separate state file:
 
 ```sh
-./zig-out/bin/kata --state /tmp/kata-review-state.json
+./rust/target/release/kata --state /tmp/kata-review-state.json
 ```
 
 ## Library and reading modes
@@ -36,7 +35,7 @@ Psalms follow the Greek (LXX) and Latin (Vulgate) numbering. The KJV pane, which
 
 The installed editions list 79 KJV books, 87 Greek books, and 68 Latin books, forming 89 distinct canonical entries. Greek records with repeated verse labels are displayed together under that label, preserving their text in source order with a space between records. This preserves source content without claiming a corrected verse-number mapping. Sirach's chapter-zero prologue is accessible; chapter choices and navigation use observed chapter availability rather than assuming every number exists in every source.
 
-For a standalone, size-optimized stripped x86-64 Linux executable, build with `zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true`. This statically links musl and embeds the original text uncompressed. Python scripts under `tests/` are extraction/provenance and verification tools only. `--licenses` displays embedded source credits and licensing notes.
+For a standalone, size-optimized stripped x86-64 Linux executable, run `scripts/install-local.sh` (or `scripts/rust-cross-build.sh` for all targets). This statically links musl and embeds the original text uncompressed. Python scripts under `tests/` are extraction/provenance and verification tools only. `--licenses` displays embedded source credits and licensing notes.
 
 - **Free reading:** choose a book, chapter, and starting verse. Menus accept `j`/`k` or a numbered selection followed by `Enter`. The verse picker uses the actual chapter output: `0` resumes that chapter's saved position (or starts at its beginning if new), while a verse selection anchors the full chapter rather than fetching only one verse. `H`/`L` (or `Shift+←`/`Shift+→`) move to previous/next chapters, including across book boundaries, without wrapping around the title.
 - **Reading plans:** choose a plan and enter the existing daily-session reader. Completion, postponed missed readings, day imports, and independent per-plan progress behave as before.
@@ -50,10 +49,10 @@ Press `p` inside the reader to choose a plan. Use `j`/`k`, then `Enter`; `Esc` o
 Switching saves the old plan's position and restores the selected plan's own progress and pane settings. The last selected plan is remembered across launches, including custom files outside the repository. There is no need to quit the application to switch plans. Built-in configurations are embedded at build time; discovered file variants are loaded immediately. You can also launch with an explicit configuration:
 
 ```sh
-./zig-out/bin/kata --plan config/optina.json --state /tmp/kata-custom-review.json
-./zig-out/bin/kata --check-plan
-./zig-out/bin/kata --passage 'John:1:1-3' --dump
-./zig-out/bin/kata --help
+./rust/target/release/kata --plan config/optina.json --state /tmp/kata-custom-review.json
+./rust/target/release/kata --check-plan
+./rust/target/release/kata --passage 'John:1:1-3' --dump
+./rust/target/release/kata --help
 ```
 
 `--dump` and `--check-plan` do not write progress and follow the remembered plan unless `--plan` overrides it. An explicit `--plan` still rejects an incompatible base state. In-app switching keeps incompatible schedules in separate progress files automatically; editing a discovered config creates a new schedule identity rather than silently reusing old progress.
@@ -69,14 +68,14 @@ The command-line preview and import remain available as alternatives:
 Preview importing your position without changing saved progress:
 
 ```sh
-./zig-out/bin/kata --start-day 88
+./rust/target/release/kata --start-day 88
 ```
 
 The preview names the assigned chapters and explains which progress will be replaced. Confirm, then launch the normal reader:
 
 ```sh
-./zig-out/bin/kata --start-day 88 --confirm
-./zig-out/bin/kata
+./rust/target/release/kata --start-day 88 --confirm
+./rust/target/release/kata
 ```
 
 Days 1–87 in the current cycle count as completed elsewhere. Day 88 remains pending and available today; importing does not mark it read or consume today's completion. Finish it normally with `c`, then `y`. No fictional completion dates are created for readings done in print.
@@ -160,6 +159,8 @@ Existing base progress is preserved. Additional plans use `<state-path>.plans/<c
 - Full grapheme-cluster/emoji rendering is not claimed. Greek UTF-8 and combining-mark wrapping have unit coverage; libc supplies display-cell widths in the terminal locale.
 
 ## Verification performed
+
+(The notes below were written for the Zig implementation, tag `V0.3.1`; the Rust port passes the same PTY and regression scripts unchanged.)
 
 `zig build test -Dtarget=x86_64-linux-musl` passed 70 Zig tests in both ReleaseSafe and ReleaseSmall, covering parsing, bundled retrieval and reference selection, input framing, bounded numeric/stale selections, layout, plan validation and boundaries, calendar completion rules, importing/repositioning progress, catalogs, isolated state paths, picker navigation, supported-title metadata, adjacent chapters, verse anchoring, the single visible Bible listing, and mapping legacy book/chapter selections.
 

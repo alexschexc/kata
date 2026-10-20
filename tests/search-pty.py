@@ -4,7 +4,7 @@ from pathlib import Path
 import os, re, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata')))
 MARK = b'\x1b[48;2;125;130;217m\x1b[38;2;6;11;30m'
 
 import fcntl, json, pty, select, signal, struct, subprocess, termios, time

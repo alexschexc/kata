@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::{env, fs, path::Path};
 
 fn main() {
-    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../src/data");
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../data");
     let mut out = String::new();
     for (index, tool) in ["kjv", "grb", "vul"].into_iter().enumerate() {
         let path = data.join(format!("{tool}.tsv"));

@@ -6,7 +6,7 @@ from pathlib import Path
 import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, tempfile, termios, time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT / 'rust/target/release/kata')))
 SAMPLES = ['The Psalter According to the Seventy - Holy Transfiguration Monastery (1).epub',
            'buildingmicroservices2ndedition.epub']
 MARK = b'\x1b[48;2;125;130;217m\x1b[38;2;6;11;30m'

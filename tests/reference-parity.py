@@ -3,7 +3,7 @@ from pathlib import Path
 import json, os, re, subprocess, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('KATA_BIN', str(ROOT/'zig-out/bin/kata')))
+BIN = Path(os.environ.get('KATA_BIN', str(ROOT/'rust/target/release/kata')))
 TOOLS = ('kjv', 'grb', 'vul')
 metadata = json.loads((ROOT/'tests/book_discovery.json').read_text())
 CASES = ('John:1', 'John:1:1', 'John:1:1,3,5', 'John:1:1-3', 'John:1-2',

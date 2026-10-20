@@ -1,7 +1,7 @@
 """Linux PTY smoke test for the kata-term backend (rust/crates/kata-term/examples/term_probe.rs).
 
 Checks, through a real pseudo-terminal: raw mode is entered (keys arrive unechoed, without
-Enter), the window size is reported, arrow/Shift-arrow/paste/lone-ESC decode as in input.zig,
+Enter), the window size is reported, arrow/Shift-arrow/paste/lone-ESC decode as in the original Zig decoder,
 SIGTERM is handled (no kill), and the original termios settings are restored on exit.
 Usage: python tests/term-pty.py [path/to/term_probe]
 """

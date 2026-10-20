@@ -1,6 +1,6 @@
 # Single-file distribution
 
-Kata now embeds the original installed `kjv`, `grb`, and `vul` TSV text datasets and indexed chapter spans. References are selected directly in Zig. Reading requires no external applets, shell utilities, Python, network, data directory, or runtime extraction.
+Kata now embeds the original installed `kjv`, `grb`, and `vul` TSV text datasets and indexed chapter spans. References are selected directly in Rust. Reading requires no external applets, shell utilities, Python, network, data directory, or runtime extraction.
 
 ## Observed installed sources
 
@@ -18,9 +18,9 @@ The three existing compressed archives total 5,325,926 bytes; raw TSV totals 20,
 
 ## Implemented bundling
 
-`src/data/*.tsv` contains the exact archive-member bytes; generated chapter indexes select spans without copying the whole corpus. `src/bundled.zig` implements chapter/verse lists, ranges, and cross-chapter ranges, preserving source availability, duplicate Greek text, and chapter-zero prologues. Data is currently embedded uncompressed, trading executable size for simple, fast, dependency-free reads. Compression is not implemented.
+`data/*.tsv` contains the exact archive-member bytes; `kata-core/build.rs` computes chapter spans at build time (docs/adr/0001-corpus-index.md) so verses are selected without copying the whole corpus. `rust/crates/kata-core/src/bundled.rs` implements chapter/verse lists, ranges, and cross-chapter ranges, preserving source availability, duplicate Greek text, and chapter-zero prologues. Data is currently embedded uncompressed, trading executable size for simple, fast, dependency-free reads. Compression is not implemented.
 
-Normal builds need only Zig 0.16.0; sources and generated indexes are included in the project. The optional development command `python tests/bundle_sources.py` refreshes exact TSV/index files from the installed source archives without executing those scripts. `--verify` checks all bytes against those archives. It records applet, archive, and TSV SHA-256 hashes in `src/data/provenance.json`. Refresh the separate book catalog/discovery metadata when changing editions, and rerun all parity checks.
+Normal builds need only the pinned Rust toolchain; the sources are included in the project. The optional development command `python tests/bundle_sources.py` refreshes the exact TSV files from the installed source archives without executing those scripts. `--verify` checks all bytes against those archives. It records applet, archive, and TSV SHA-256 hashes in `data/provenance.json`. Refresh the separate book catalog/discovery metadata when changing editions, and rerun all parity checks.
 
 `kata --licenses` prints embedded attribution/license notes and dataset provenance. This does not read companion files or access the network.
 
@@ -52,13 +52,11 @@ A separate executable is needed for each OS/CPU. After Linux confirmation, Windo
 
 The release macOS and Windows binaries come from native runners (`.github/workflows/macos-smoke.yml`, `windows-smoke.yml`), which keep each build as an artifact after its smoke tests pass. `scripts/rust-cross-build.sh` produces the same targets from Linux.
 
-`tests/cross-artifacts.py` checks actual executable headers, architecture, OS-library dependencies, and the complete embedded corpus bytes/provenance for both targets. This is artifact inspection, not native execution. No macOS machine or Windows/Wine runner is available in this Linux environment.
+`tests/rust-cross-artifacts.py` checks actual executable headers, architecture, OS-library dependencies, and the complete embedded corpus bytes/provenance for both targets. This is artifact inspection, not native execution. No macOS machine or Windows/Wine runner is available in this Linux environment.
 
 On each destination machine, use `python tests/target-smoke.py /path/to/kata` (or the Windows `.exe` path) for an optional isolated CLI smoke test. Python is required only to run the test script, never the app. Then review the real terminal: library, free reading, plan selection/import, scrolling/resize, unknown keys and function/arrow sequences, bracketed paste, normal quit/Ctrl-C, and restored terminal settings. Use `--state` with a temporary path to protect normal progress. Test data/state directories without HOME set on Windows as well.
 
 The macOS executable links only Apple's system libraries: `libSystem.B.dylib` plus `libiconv.2.dylib`, which the Rust standard library pulls in on macOS (checked with `otool -L` on a native macOS 14 arm64 build in CI); the current target minimum is macOS 13.0. Mach-O code-signature presence is checked, but Developer ID signing/notarization is not performed. Windows publisher signing is likewise not provided. Platform security/download policies may require additional release signing before wider distribution. Native terminal, date, file replacement, and platform security behavior remain target-machine checks; Linux success does not prove them.
-
-The older `zig-out/aarch64-linux-musl/bin/kata` artifact predates bundling. It was only cross-built, not executed on ARM hardware, and is not this standalone release.
 
 ## Redistribution notices
 
@@ -71,4 +69,4 @@ The current SBLGNT license page specifies Creative Commons Attribution 4.0 Inter
 
 ## Zig reference release
 
-The Zig implementation is frozen at tag `V0.3.1` (commit 859c586, the Terminal.app 256-colour hotfix). The Rust port (`rust/`, tracked in Linear project "Port Kata to Rust") is diffed and parity-tested against this tag. Check out the tag to reproduce the Zig build: `git checkout V0.3.1 && zig build`.
+The earlier Zig implementation lives at tag `V0.3.1` (commit 859c586, the Terminal.app 256-colour hotfix); the Rust port was diffed byte for byte against it (1,581 `--dump`/CLI invocations, ingest output, image pixels, graphics escape sequences). Check out the tag to reproduce the Zig build: `git checkout V0.3.1 && zig build`. The Zig sources are no longer in the main branch.

@@ -1,6 +1,6 @@
 # Kata
 
-Kata is a terminal reader written in Rust (ported from the Zig release V0.3.1). It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
+Kata is a terminal reader written in Rust. It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
 
 Status: beta. Linux is tested locally. The macOS (Apple silicon) and Windows (x64) builds are built and smoke-tested on native CI runners (GitHub Actions), not yet by hand on real machines.
 
@@ -27,7 +27,7 @@ Download the build for your system from the GitLab release page.
 
 Themes: Library → Theme switches between Ethereal (default), Aetheria and Sedate; `KATA_THEME` overrides it for one run.
 
-From source, Rust port (toolchain pinned in `rust/rust-toolchain.toml`):
+From source (Rust toolchain pinned in `rust/rust-toolchain.toml`):
 
 ```sh
 cd rust
@@ -35,29 +35,15 @@ cargo build --release --locked   # rust/target/release/kata
 cargo test --locked
 ```
 
-Cross-builds for the shipping targets: `scripts/rust-cross-build.sh`. The PTY tests in `tests/` run against either binary via `KATA_BIN`.
+Cross-builds for the shipping targets: `scripts/rust-cross-build.sh`. The PTY tests in `tests/` run against the built binary (`rust/target/release/kata`, or `KATA_BIN`).
 
-Zig reference build (V0.3.1, Zig 0.16.0 pinned in `mise.toml`):
+`scripts/install-local.sh` builds the static Rust release (musl) into a scratch directory, smoke-tests it, and replaces `~/.local/bin/kata`.
 
-```sh
-zig build                      # debug build to zig-out/bin/kata
-zig build test --summary all   # unit tests
-./zig-out/bin/kata
-```
-
-Shipping builds (static, stripped):
-
-```sh
-zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dstrip=true
-zig build -Dtarget=aarch64-macos     -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/macos-arm64
-zig build -Dtarget=x86_64-windows    -Doptimize=ReleaseSmall -Dstrip=true --prefix zig-out/windows-x64
-```
-
-`zig-out/bin/kata` is tracked in git and is meant to hold the release Linux build; a plain `zig build` overwrites it with a debug build. `scripts/install-local.sh` builds the static Rust release into a scratch directory, smoke-tests it, and replaces `~/.local/bin/kata`.
+The earlier Zig implementation is preserved at tag `V0.3.1`.
 
 ## Using it
 
-Run `kata` to open the **Library**: the Bible, Reading plans, your converted books, Search all books, and Ingest folders. The Bible and each book have their own menu for free reading and their plans. The colors follow the Omarchy Ethereal theme.
+Run `kata` to open the **Library**: the Bible, Reading plans, your converted books, Search all books, and Ingest folders. The Bible and each book have their own menu for free reading and their plans. The default colors follow the Omarchy Ethereal theme; Library → Theme switches palettes.
 
 | Keys | Action |
 | --- | --- |
