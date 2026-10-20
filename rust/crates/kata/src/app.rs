@@ -20,7 +20,7 @@ use kata_core::search::SearchState;
 use kata_core::source::{self, Reference};
 use kata_core::state::{self, State};
 use kata_core::wyhash;
-use kata_term::book_reader::{self, Exit, Position};
+use kata_term::book_reader::{self, Completion, Exit, Portion, Position};
 use kata_term::start_menu::{self, Book, Choice};
 use kata_term::tui::{self, ChooseOptions, Options, Tui};
 use std::error::Error;
@@ -298,6 +298,7 @@ fn load_book(shelf: &Shelf, index: usize) -> Result<Document, Box<dyn Error>> {
 }
 
 /// Reads library book `index` (at `start`, else the saved position).
+#[allow(clippy::too_many_arguments)]
 fn open_book(
     tui: &mut Tui,
     shelf: &Shelf,
@@ -305,6 +306,8 @@ fn open_book(
     base: &str,
     caps: Capabilities,
     start: Option<Position>,
+    portion: Option<&Portion>,
+    completion: Option<Completion<'_>>,
 ) -> (Exit, Option<String>) {
     let entry = &shelf.entries[index];
     let doc = match load_book(shelf, index) {
@@ -327,8 +330,8 @@ fn open_book(
         &shelf.folders.library,
         caps,
         start,
-        None,
-        None,
+        portion,
+        completion,
     ) {
         Ok(exit) => (exit, None),
         Err(error) => (
@@ -422,7 +425,7 @@ fn search_books(
         };
         selected = pick;
         let (book, position) = found[pick];
-        let (exit, _) = open_book(tui, shelf, book, base, caps, Some(position));
+        let (exit, _) = open_book(tui, shelf, book, base, caps, Some(position), None, None);
         if exit == Exit::Quit {
             return Ok((exit, None));
         }
@@ -473,6 +476,321 @@ fn build_plan(
         Ok(index) => Ok((Some(index), format!("Plan saved to {saved} and selected."))),
         Err(error) => Ok((None, format!("Saved {saved} but cannot load it: {error}."))),
     }
+}
+
+/// One day's reading, grouped: consecutive Bible chapters form one item; consecutive units of one
+/// library stream form one portion.
+struct DayItem {
+    label: String,
+    /// Bible references ("John:3") for a Bible item.
+    references: Vec<String>,
+    book: Option<usize>,
+    start: Position,
+    portion: Option<Portion>,
+}
+
+/// Reading units of library books, computed once per (book, kind) while a hub is open.
+#[derive(Default)]
+struct UnitCache(std::collections::HashMap<(usize, bool), Vec<reading_units::Unit>>);
+
+impl UnitCache {
+    fn get(
+        &mut self,
+        shelf: &Shelf,
+        index: usize,
+        unit: &str,
+    ) -> Result<&[reading_units::Unit], Box<dyn Error>> {
+        let sections = unit == "section";
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.0.entry((index, sections)) {
+            let doc = load_book(shelf, index)?;
+            slot.insert(reading_units::units(
+                &doc,
+                if sections {
+                    UnitKind::Section
+                } else {
+                    UnitKind::Chapter
+                },
+            ));
+        }
+        Ok(&self.0[&(index, sections)])
+    }
+}
+
+fn shelf_index(shelf: &Shelf, file: &str) -> Option<usize> {
+    shelf.entries.iter().position(|entry| entry.file == file)
+}
+
+fn day_items(
+    shelf: &Shelf,
+    cache: &mut UnitCache,
+    entry: &Entry,
+    ordinal: usize,
+) -> Result<Vec<DayItem>, Box<dyn Error>> {
+    let streams = &entry.plan.config().streams;
+    let chapters = entry.plan.assignments(ordinal)?;
+    let mut items = Vec::new();
+    let mut i = 0;
+    while i < chapters.len() {
+        let stream = &streams[chapters[i].stream];
+        let mut j = i;
+        while j < chapters.len() && chapters[j].stream == chapters[i].stream {
+            j += 1;
+        }
+        if let Some(file) = &stream.library {
+            let missing = |items: &mut Vec<DayItem>| {
+                items.push(DayItem {
+                    label: format!(
+                        "{} · not in the library (convert it again)",
+                        stream.books[0].name
+                    ),
+                    references: Vec::new(),
+                    book: None,
+                    start: Position::default(),
+                    portion: None,
+                });
+            };
+            let Some(index) = shelf_index(shelf, file) else {
+                missing(&mut items);
+                i = j;
+                continue;
+            };
+            let unit = stream.unit.as_deref().ok_or("InvalidPlan")?;
+            let units = cache.get(shelf, index, unit)?;
+            if units.is_empty() {
+                missing(&mut items);
+                i = j;
+                continue;
+            }
+            let pick =
+                |chapter: u16| &units[usize::from(chapter).saturating_sub(1).min(units.len() - 1)];
+            let (first, last) = (pick(chapters[i].chapter), pick(chapters[j - 1].chapter));
+            let label = if i + 1 == j {
+                first.label.clone()
+            } else {
+                format!("{}  →  {}", first.label, last.label)
+            };
+            items.push(DayItem {
+                label: format!("{} · {label}", shelf.entries[index].title),
+                references: Vec::new(),
+                book: Some(index),
+                start: Position {
+                    version: 1,
+                    chapter: first.chapter,
+                    block: first.start,
+                },
+                portion: Some(Portion {
+                    chapter: last.chapter,
+                    end: last.end,
+                    label,
+                }),
+            });
+        } else {
+            let references: Vec<String> = chapters[i..j]
+                .iter()
+                .map(|c| format!("{}:{}", c.book, c.chapter))
+                .collect();
+            let names: Vec<String> = chapters[i..j]
+                .iter()
+                .map(|c| format!("{} {}", c.book, c.chapter))
+                .collect();
+            items.push(DayItem {
+                label: format!("Bible · {}", names.join(", ")),
+                references,
+                book: None,
+                start: Position::default(),
+                portion: None,
+            });
+        }
+        i = j;
+    }
+    Ok(items)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HubExit {
+    Home,
+    Quit,
+}
+
+/// Daily view for plans with library streams: lists today's portions (Bible chapters open in the
+/// Bible reader, library portions in the book reader with an end-of-reading marker), marks the
+/// day complete, or picks another day. Progress uses the same state files as Bible plans.
+fn plan_hub(
+    tui: &mut Tui,
+    shelf: &Shelf,
+    entry: &Entry,
+    base: &str,
+    base_hash: &mut u64,
+    caps: Capabilities,
+    finder: &mut SearchState,
+) -> Result<HubExit, Box<dyn Error>> {
+    let path = catalog::progress_path(base, *base_hash, entry.hash);
+    let mut state = state::load(Path::new(&path))?;
+    if state.plan_hash != 0 && state.plan_hash != entry.hash {
+        return failure("PlanChangedUseSeparateState");
+    }
+    state.plan_hash = entry.hash;
+    state::save(Path::new(&path), &state)?;
+    if base == path {
+        *base_hash = entry.hash;
+    }
+    catalog::save_selected(base, &entry.id)?;
+    let plan = &entry.plan;
+    let days = plan.total_days();
+    let mut cache = UnitCache::default();
+    let (mut note, mut selected) = (String::new(), 0usize);
+    while !tui.is_interrupted() {
+        let date = clock::today().ok_or("ClockUnavailable")?;
+        let ordinal = state.assignment(date);
+        let finished = !plan.config().repeat && ordinal >= days;
+        let items = if finished {
+            Vec::new()
+        } else {
+            day_items(shelf, &mut cache, entry, ordinal)?
+        };
+        let mut labels: Vec<String> = items
+            .iter()
+            .map(|item| format!("▸ {}", item.label))
+            .collect();
+        let done_today = state.completed_on >= date;
+        labels.push(
+            if done_today {
+                "✓ Completed today · next day opens tomorrow"
+            } else {
+                "✓ Mark today's reading complete"
+            }
+            .into(),
+        );
+        labels.push("Choose day…".into());
+        labels.push("Back to Library".into());
+        let heading = if finished {
+            "Plan finished. Choose day… to read again.".to_string()
+        } else {
+            format!(
+                "Day {}/{days}{} · Enter opens a reading; finish at the end-of-reading marker, then m.",
+                ordinal % days + 1,
+                if done_today {
+                    " · completed today"
+                } else {
+                    ""
+                }
+            )
+        };
+        let description = format!("{note}{heading}");
+        note.clear();
+        let Some(choice) = tui.choose(
+            plan.name(),
+            &description,
+            &labels,
+            selected.min(labels.len() - 1),
+            1,
+        )?
+        else {
+            return Ok(HubExit::Home);
+        };
+        selected = choice;
+        if choice < items.len() {
+            let item = &items[choice];
+            if let Some(index) = item.book {
+                let completion = Completion {
+                    state: &mut state,
+                    path: &path,
+                    today: date,
+                };
+                let (exit, message) = open_book(
+                    tui,
+                    shelf,
+                    index,
+                    base,
+                    caps,
+                    Some(item.start),
+                    item.portion.as_ref(),
+                    Some(completion),
+                );
+                if exit == Exit::Quit {
+                    return Ok(HubExit::Quit);
+                }
+                if let Some(message) = message {
+                    note = format!("{message} ");
+                }
+            } else if !item.references.is_empty() {
+                let mut rows = Vec::new();
+                for raw in &item.references {
+                    rows.extend(layout::align_verses(&source::streams(&Reference::new(
+                        raw,
+                    )?)?)?);
+                }
+                let scope = wyhash::hash(entry.hash, &(ordinal as u64).to_le_bytes());
+                if state.scope_hash != scope {
+                    state.positions = Default::default();
+                    state.scope_hash = scope;
+                }
+                let action = {
+                    let mut options = Options::new(
+                        &format!("{} · day {}/{days}", plan.name(), ordinal % days + 1),
+                        PathBuf::from(&path),
+                    );
+                    options.plan_mode = false;
+                    options.completable = true;
+                    options.today = date;
+                    options.notice = "Plan reading · m returns to the plan".into();
+                    options.search = Some(&mut *finder);
+                    tui.read(&rows, &mut state, options)?
+                };
+                state::save(Path::new(&path), &state)?;
+                if action.is_none() {
+                    return Ok(HubExit::Quit);
+                }
+            }
+            continue;
+        }
+        match choice - items.len() {
+            0 => {
+                if !finished {
+                    match state.complete(date) {
+                        Ok(()) => {}
+                        Err(state::StateError::AlreadyCompletedToday) => {
+                            note = "Already completed today. ".into();
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                    state::save(Path::new(&path), &state)?;
+                    note = "Completed and saved. ".into();
+                }
+            }
+            1 => {
+                let mut day_labels = Vec::with_capacity(days);
+                for day in 0..days {
+                    let parts: Vec<String> = day_items(shelf, &mut cache, entry, day)?
+                        .into_iter()
+                        .map(|item| item.label)
+                        .collect();
+                    day_labels.push(format!("Day {} · {}", day + 1, parts.join("  |  ")));
+                }
+                let Some(day) = tui.choose(
+                    "Choose plan day",
+                    "Earlier days in this cycle count as complete; the chosen day is pending.",
+                    &day_labels,
+                    ordinal % days,
+                    1,
+                )?
+                else {
+                    continue;
+                };
+                if !plan.config().repeat {
+                    state.next_day = 0;
+                    state.completed_on = 0;
+                }
+                state.start_at_day(day + 1, days, date)?;
+                state::save(Path::new(&path), &state)?;
+                note = format!("Moved to day {}. ", day + 1);
+                selected = 0;
+            }
+            _ => return Ok(HubExit::Home),
+        }
+    }
+    Ok(HubExit::Quit)
 }
 
 struct Session {
@@ -531,9 +849,6 @@ fn prepare(
     }
     Ok(Session { title, rows })
 }
-
-const NO_BOOK_READER: &str =
-    "Reading ingested books is not yet available in the Rust build (book reader port, KAT-29).";
 
 /// Reading plans list: pick, build or remove. Returns the next mode when a plan is chosen.
 fn plans_menu(
@@ -773,9 +1088,10 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
                     build_for = Some(file);
                     active = Some(Choice::BuildPlan);
                 } else if pick > 0 {
-                    notice = NO_BOOK_READER.into();
+                    active = Some(Choice::Plan(plan_rows[pick - 1]));
                 } else {
-                    let (exit, note) = open_book(&mut tui, &shelf, index, base, graphics, None);
+                    let (exit, note) =
+                        open_book(&mut tui, &shelf, index, base, graphics, None, None, None);
                     if exit == Exit::Quit {
                         return Ok(());
                     }
@@ -817,7 +1133,19 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
         let entry_hash = plans.entries[selected].hash;
         if free.is_none() && has_library(&plans.entries[selected]) {
             active = None;
-            notice = NO_BOOK_READER.into();
+            match plan_hub(
+                &mut tui,
+                &shelf,
+                &plans.entries[selected],
+                base,
+                &mut base_hash,
+                graphics,
+                &mut finder,
+            ) {
+                Err(error) => notice = format!("Cannot open plan: {error}."),
+                Ok(HubExit::Quit) => return Ok(()),
+                Ok(HubExit::Home) => notice = "Library".into(),
+            }
             continue;
         }
         let query: Option<String> = match free {
