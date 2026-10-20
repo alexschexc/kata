@@ -1,6 +1,6 @@
 # Kata
 
-Kata is a terminal reader written in Zig. It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
+Kata is a terminal reader written in Rust (ported from the Zig release V0.3.1). It shows parallel texts side by side, keeps daily reading plans, and reads your own EPUB books. It is one self-contained executable: no network, Python, or other runtime is needed.
 
 Status: beta (v0.3.1). Linux is the tested platform. The macOS (Apple silicon) and Windows (x64) builds are cross-compiled and have not been verified on real machines.
 
@@ -25,7 +25,17 @@ Download the build for your system from the GitLab release page.
 - **macOS (Apple silicon):** unpack `kata-v0.3.1-macos-aarch64.tar.gz` and double-click `Run kata.command`. The binary is not Developer ID signed or notarized, so macOS download policies may block it until you allow it; this has not been tested on a Mac.
 - **Windows (x64):** run `kata.exe` in a terminal.
 
-From source (Zig 0.16.0, pinned in `mise.toml`):
+From source, Rust port (toolchain pinned in `rust/rust-toolchain.toml`):
+
+```sh
+cd rust
+cargo build --release --locked   # rust/target/release/kata
+cargo test --locked
+```
+
+Cross-builds for the shipping targets: `scripts/rust-cross-build.sh`. The PTY tests in `tests/` run against either binary via `KATA_BIN`.
+
+Zig reference build (V0.3.1, Zig 0.16.0 pinned in `mise.toml`):
 
 ```sh
 zig build                      # debug build to zig-out/bin/kata

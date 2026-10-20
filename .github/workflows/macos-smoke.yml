@@ -45,3 +45,12 @@ jobs:
         run: python3 tests/target-smoke.py "$GITHUB_WORKSPACE/rust/target/release/kata"
       - name: Provenance
         run: python3 tests/provenance-check.py "$GITHUB_WORKSPACE/rust/target/release/kata"
+      - name: Linked libraries (PACKAGING.md claim)
+        run: |
+          otool -L "$GITHUB_WORKSPACE/rust/target/release/kata" | tee /tmp/otool.txt
+          # Only system libraries may appear.
+          ! tail -n +2 /tmp/otool.txt | grep -vE '^\s+(/usr/lib/|/System/Library/)'
+      - name: Colour fallback (Terminal.app)
+        run: KATA_BIN="$GITHUB_WORKSPACE/rust/target/release/kata" python3 tests/color-fallback-pty.py
+      - name: Terminal layer PTY
+        run: KATA_BIN="$GITHUB_WORKSPACE/rust/target/release/kata" python3 tests/term-pty.py
