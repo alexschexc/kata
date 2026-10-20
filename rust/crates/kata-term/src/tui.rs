@@ -49,9 +49,6 @@ fn slice(text: &str, from: usize, to: usize) -> &str {
     text.get(from..to).unwrap_or("")
 }
 
-const MARK_ON: &str = concat!("\x1b[48;2;125;130;217m", "\x1b[38;2;6;11;30m");
-const MARK_OFF: &str = concat!("\x1b[48;2;6;11;30m", "\x1b[38;2;255;206;173m");
-
 /// Writes `full[from..to]`, highlighting query matches found from `search_from`, restoring
 /// `after_match` after each match.
 pub fn write_marked_styled(
@@ -75,7 +72,7 @@ pub fn write_marked_styled(
         let first = range.start.max(at);
         let last = range.end.min(to);
         w.push_str(slice(full, at, first));
-        w.push_str(MARK_ON);
+        w.push_str(&theme::mark_on());
         w.push_str(slice(full, first, last));
         w.push_str(after_match);
         at = last;
@@ -91,7 +88,7 @@ fn write_marked(
     query: &Query,
     search_from: usize,
 ) {
-    write_marked_styled(w, full, from, to, query, search_from, MARK_OFF);
+    write_marked_styled(w, full, from, to, query, search_from, &theme::mark_off());
 }
 
 /// True when every space-separated word of `filter` starts a word in `haystack` (case- and
@@ -281,11 +278,7 @@ fn render_picker(
             .min(count.saturating_sub(capacity));
         for index in first..count.min(first + capacity) {
             let _ = write!(w, "\x1b[{};1H", index - first + 3);
-            w.push_str(if index == picker.selected {
-                concat!("\x1b[38;2;125;130;217m", "▶ ")
-            } else {
-                concat!("\x1b[38;2;255;206;173m", "  ")
-            });
+            w.push_str(&theme::pointer(index == picker.selected));
             let label = if is_plans {
                 plan_label(options, index)
             } else {
@@ -326,11 +319,7 @@ fn render_plan_rows(
         .min(count.saturating_sub(capacity));
     for index in first..count.min(first + capacity) {
         let _ = write!(w, "\x1b[{};1H", index - first + 3);
-        w.push_str(if index == picker.selected {
-            concat!("\x1b[38;2;125;130;217m", "▶ ")
-        } else {
-            concat!("\x1b[38;2;255;206;173m", "  ")
-        });
+        w.push_str(&theme::pointer(index == picker.selected));
         w.push_str(clipped(&plan_label(options, index), columns - 2));
     }
     render_picker_footer(w, picker, options, columns, height);
@@ -427,9 +416,9 @@ fn render_panel(
         "\x1b[{row};{x}H{}┃ {}",
         theme::RULE,
         if finder.focus {
-            concat!("\x1b[1m", "\x1b[38;2;125;130;217m")
+            format!("\x1b[1m{}", theme::ACCENT)
         } else {
-            theme::DIM
+            theme::DIM.to_string()
         }
     );
     cell(w, &header, inner);
@@ -479,11 +468,11 @@ fn render_panel(
         } else {
             format!("{marker}{} {}:{} ", hit.book(), hit.chapter, hit.number)
         };
-        w.push_str(if chosen { theme::ACCENT } else { theme::DIM });
+        w.push_str(if chosen { theme::ACCENT } else { theme::DIM }.as_str());
         let place_visible = clipped(&place, inner);
         w.push_str(place_visible);
         let mut used = layout::display_width(place_visible);
-        w.push_str(theme::INK);
+        w.push_str(theme::INK.as_str());
         // Show a little context before the first match, from a word start.
         let mut from = 0;
         let start = hit.match_range.start;
@@ -901,11 +890,7 @@ impl Tui {
                             .min(count.saturating_sub(capacity));
                         for position in first..count.min(first + capacity) {
                             let _ = write!(w, "\x1b[{};1H", position - first + 3);
-                            w.push_str(if position == picker.selected {
-                                concat!("\x1b[38;2;125;130;217m", "▶ ")
-                            } else {
-                                concat!("\x1b[38;2;255;206;173m", "  ")
-                            });
+                            w.push_str(&theme::pointer(position == picker.selected));
                             let _ = write!(w, "{}. ", position + number_base);
                             w.push_str(clipped(
                                 &labels[visible[position]],
@@ -1189,9 +1174,9 @@ impl Tui {
                                 row.label(pane).chapter
                             );
                             w.push_str(if state.focus == pane && !panel_focus {
-                                theme::ACCENT
+                                theme::ACCENT.as_str()
                             } else {
-                                theme::DIM
+                                theme::DIM.as_str()
                             });
                             cell(&mut w, &label, pane_width);
                             w.push_str(" │ ");
@@ -1202,7 +1187,7 @@ impl Tui {
                                 if !state.enabled[pane] {
                                     continue;
                                 }
-                                w.push_str(theme::INK);
+                                w.push_str(theme::INK.as_str());
                                 let at = top + line_index;
                                 let query = highlight.and_then(|(p, q)| (p == pane).then_some(q));
                                 if at < lines.len() {
@@ -1246,7 +1231,7 @@ impl Tui {
                             f.prompt_text(),
                             f.names[f.prompt_pane]
                         );
-                        w.push_str(theme::INK);
+                        w.push_str(theme::INK.as_str());
                         w.push_str(clipped(&line, columns));
                     } else {
                         w.push_str(clipped(
@@ -1572,11 +1557,12 @@ mod tests {
         let mut w = String::new();
         let query = Query::new("love");
         write_marked_styled(&mut w, "I love; he loveth.", 0, 18, &query, 0, "<off>");
-        assert_eq!(w, format!("I {MARK_ON}love<off>; he {MARK_ON}loveth<off>."));
+        let on = theme::mark_on();
+        assert_eq!(w, format!("I {on}love<off>; he {on}loveth<off>."));
         w.clear();
         // A match cut by the visible window is clipped to it.
         write_marked_styled(&mut w, "he loveth", 0, 6, &query, 0, "<off>");
-        assert_eq!(w, format!("he {MARK_ON}lov<off>"));
+        assert_eq!(w, format!("he {on}lov<off>"));
     }
 
     #[test]

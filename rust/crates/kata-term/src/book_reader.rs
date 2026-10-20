@@ -576,9 +576,9 @@ fn render_panel(
         w,
         "\x1b[{row};{x}H{RULE}┃ {}",
         if finder.focus {
-            "\x1b[1m\x1b[38;2;125;130;217m"
+            format!("\x1b[1m{GOLD}")
         } else {
-            DIM
+            DIM.to_string()
         }
     );
     tui::cell(w, &header, inner);
@@ -621,14 +621,14 @@ fn render_panel(
             format!("{marker}{chapter_title} ")
         };
         let short = tui::clipped(&place, inner.min(28));
-        w.push_str(if chosen { GOLD } else { DIM });
+        w.push_str(if chosen { GOLD } else { DIM }.as_str());
         w.push_str(short);
         let mut used = layout::display_width(short);
         if short.len() < place.len() && used < inner {
             w.push_str("… ");
             used += 2;
         }
-        w.push_str(INK);
+        w.push_str(INK.as_str());
         let mut from = 0;
         let start = hit.match_range.start;
         if start > 24 {
@@ -830,7 +830,7 @@ pub fn run(
                         let Some(line) = lines.get(top + row) else {
                             continue;
                         };
-                        w.push_str(DIM);
+                        w.push_str(DIM.as_str());
                         let shown: String = line.gutter.chars().take(GUTTER_WIDTH - 1).collect();
                         let _ = write!(w, "{:>width$}", shown, width = GUTTER_WIDTH - 1);
                         w.push(' ');
@@ -923,7 +923,7 @@ pub fn run(
                 let _ = write!(w, "\x1b[{height};1H{DIM}");
                 if finder.prompt {
                     let line = format!("/{}█   searching this book", finder.prompt_text());
-                    w.push_str(INK);
+                    w.push_str(INK.as_str());
                     w.push_str(tui::clipped(&line, columns));
                 } else {
                     let blocks = &doc.chapters[chapter].blocks;

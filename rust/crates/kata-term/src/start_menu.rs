@@ -16,6 +16,7 @@ pub enum Choice {
     SearchBooks,
     BuildPlan,
     Plans,
+    Theme,
 }
 
 /// Ingested documents offered in the Library after the built-in titles.
@@ -240,6 +241,11 @@ pub fn run(
         haystack.push("Search all books".into());
         labels.push("Search all books · find a word or phrase across every converted book".into());
     }
+    haystack.push("Theme".into());
+    labels.push(format!(
+        "Theme · {} · switch the colour palette",
+        crate::theme::names()[crate::theme::current()]
+    ));
     haystack.push("Ingest folders".into());
     labels.push(
         "Ingest folders · choose where EPUBs are read from and converted books are kept".into(),
@@ -268,7 +274,15 @@ pub fn run(
         if !books.is_empty() && title_row == books_end {
             return Ok(Some(Choice::SearchBooks));
         }
-        if title_row > books_end || (books.is_empty() && title_row == books_end) {
+        let theme_row = if books.is_empty() {
+            books_end
+        } else {
+            books_end + 1
+        };
+        if title_row == theme_row {
+            return Ok(Some(Choice::Theme));
+        }
+        if title_row > theme_row {
             return Ok(Some(Choice::Folders));
         }
         let title_index = visible[title_row];

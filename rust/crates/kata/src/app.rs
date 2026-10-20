@@ -23,6 +23,7 @@ use kata_core::state::{self, State};
 use kata_core::wyhash;
 use kata_term::book_reader::{self, Completion, Exit, Portion, Position};
 use kata_term::start_menu::{self, Book, Choice};
+use kata_term::theme;
 use kata_term::tui::{self, ChooseOptions, Options, Tui};
 use std::error::Error;
 use std::io;
@@ -874,6 +875,42 @@ fn load_editions(base: &str) -> [u8; 3] {
     editions
 }
 
+fn theme_path(base: &str) -> String {
+    format!("{base}.theme")
+}
+
+/// Applies the saved theme (`KATA_THEME` wins for this run when set).
+fn load_theme(base: &str) {
+    let saved = std::fs::read_to_string(theme_path(base)).ok();
+    let chosen = cli::env_var("KATA_THEME").or(saved);
+    if let Some(index) = chosen.as_deref().and_then(theme::find) {
+        theme::set(index);
+    }
+}
+
+/// Theme menu. Enter applies and saves the palette; Esc keeps the current one. Returns whether
+/// a theme was chosen.
+fn choose_theme(tui: &mut Tui, base: &str) -> Result<bool, Box<dyn Error>> {
+    let labels = theme::descriptions();
+    let Some(pick) = tui.choose(
+        "Theme",
+        "Enter applies and saves the palette; Esc keeps the current one.",
+        &labels,
+        theme::current(),
+        1,
+    )?
+    else {
+        return Ok(false);
+    };
+    theme::set(pick);
+    let path = theme_path(base);
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, theme::names()[pick].to_lowercase())?;
+    Ok(true)
+}
+
 struct Session {
     title: String,
     rows: Vec<Row>,
@@ -1073,6 +1110,7 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
     let mut build_for: Option<String> = None;
     // Column editions are one app-wide choice (not per reading location).
     let mut editions = load_editions(base);
+    load_theme(base);
     let mut shelf = Shelf::default();
     let home = cli::env_var("HOME").or_else(|| cli::env_var("USERPROFILE"));
     let folders_saved = match ingest::load_folders(Path::new(&config_home)) {
@@ -1135,6 +1173,19 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
         match active.expect("set above") {
             Choice::Plan(index) => selected = index,
             Choice::Free(at) => free = Some(at),
+            Choice::Theme => {
+                active = None;
+                let before = theme::current();
+                match choose_theme(&mut tui, base) {
+                    Ok(true) => notice = format!("Theme: {}.", theme::names()[theme::current()]),
+                    Ok(false) => {
+                        theme::set(before);
+                        notice = "Theme unchanged.".into();
+                    }
+                    Err(error) => notice = format!("Cannot change theme: {error}."),
+                }
+                continue;
+            }
             Choice::Folders => {
                 active = None;
                 shelf.notice = None;
