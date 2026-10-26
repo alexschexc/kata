@@ -6,6 +6,21 @@ never breaks anything.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-26
+
+### Changed
+
+- Reading a plan day from a converted book now works like a Bible plan day.
+  The day's text is one continuous buffer, and reaching the bottom, at the
+  "end of today's reading" marker, is the end of that day. `H`, `L` and `t`
+  no longer jump between chapters there, and `/` searches only that day.
+
+### Added
+
+- Where you stop in a plan day is remembered for each plan, day and item, so
+  reopening it returns you to the same place. Free reading of the same book
+  keeps its own position.
+
 ## [0.4.0] - 2026-10-20
 
 Kata is now written in Rust. Output for every reference, plan and command line
