@@ -3,7 +3,7 @@
 //!
 //! The TSV files are embedded verbatim. Chapter byte spans are computed lazily on first use
 //! with the same rules as `tests/bundle_sources.py` (the generated Zig `*_index.zig`); a test
-//! checks them against those files. KAT-18 decides the final index strategy.
+//! checks them against those files. NAD-18 decides the final index strategy.
 
 use std::borrow::Cow;
 use std::collections::HashMap;

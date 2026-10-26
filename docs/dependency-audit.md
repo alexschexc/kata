@@ -1,6 +1,6 @@
 # Dependency audit
 
-Review of the Rust crates Kata ships (KAT-35). Checked on 2026-10-19 against `rust/Cargo.lock`.
+Review of the Rust crates Kata ships (NAD-35). Checked on 2026-10-19 against `rust/Cargo.lock`.
 
 ## Method
 

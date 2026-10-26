@@ -1,4 +1,4 @@
-# Native macOS arm64 verification of the Rust build (KAT-7, KAT-32). GitLab SaaS has no macOS runner for
+# Native macOS arm64 verification of the Rust build (NAD-7, NAD-32). GitLab SaaS has no macOS runner for
 # this account, so this workflow runs from a GitHub mirror of the repository.
 name: macos-smoke
 on:

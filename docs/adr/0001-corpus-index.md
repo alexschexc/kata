@@ -1,6 +1,6 @@
 # ADR 0001: Chapter index for the embedded corpora (Rust port)
 
-Status: accepted (KAT-18)
+Status: accepted (NAD-18)
 
 ## Context
 The Zig build embeds three TSV corpora (kjv, grb, vul; 20.4 MB) and a generated `*_index.zig`
@@ -9,7 +9,7 @@ scanning the whole corpus. The Rust port needs an equivalent.
 
 ## Options
 1. `build.rs` generates the spans from the embedded TSV at compile time.
-2. Lazy index: scan the TSV at first use (tried first, in KAT-14).
+2. Lazy index: scan the TSV at first use (tried first, in NAD-14).
 3. Commit generated Rust index files, as the Zig build does.
 
 ## Decision

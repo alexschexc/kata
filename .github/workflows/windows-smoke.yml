@@ -1,4 +1,4 @@
-# Native Windows x64 verification of the Rust port (KAT-23). GitLab's free compute minutes are
+# Native Windows x64 verification of the Rust port (NAD-23). GitLab's free compute minutes are
 # exhausted, so Windows runs here; GitLab remains the primary home of the repository.
 name: windows-smoke
 on:

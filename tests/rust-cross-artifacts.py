@@ -2,7 +2,7 @@
 
 Port of tests/cross-artifacts.py. Checks executable headers, architecture and OS-library
 dependencies for Linux musl, macOS arm64 and Windows x64. The embedded-corpus/provenance check
-is skipped for the skeleton and enabled with --expect-corpora once the TSVs are embedded (KAT-17).
+is skipped for the skeleton and enabled with --expect-corpora once the TSVs are embedded (NAD-17).
 Usage: python tests/rust-cross-artifacts.py [--expect-corpora]   (build first: scripts/rust-cross-build.sh)
 """
 from pathlib import Path
