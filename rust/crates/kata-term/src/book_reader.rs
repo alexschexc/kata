@@ -42,13 +42,37 @@ impl Default for Position {
     }
 }
 
-/// A plan portion being read: an end-of-reading marker is drawn before block `end` of chapter
-/// `chapter` (end == blocks.len(): after the chapter).
+/// A plan day's reading from one book: the units to read, in order, as `(chapter, start, end)`
+/// block ranges. The reader joins them into one continuous buffer ending in an end-of-reading
+/// marker, like a Bible plan day.
 #[derive(Debug, Clone)]
 pub struct Portion {
-    pub chapter: usize,
-    pub end: usize,
+    pub ranges: Vec<(usize, usize, usize)>,
     pub label: String,
+}
+
+/// The day's text as a single-chapter document.
+pub fn portion_document(doc: &Document, portion: &Portion) -> Document {
+    let blocks = portion
+        .ranges
+        .iter()
+        .flat_map(|&(chapter, start, end)| {
+            let all = &doc.chapters[chapter].blocks;
+            all[start.min(all.len())..end.min(all.len())]
+                .iter()
+                .cloned()
+        })
+        .collect();
+    Document {
+        title: doc.title.clone(),
+        author: doc.author.clone(),
+        source: doc.source.clone(),
+        converter: doc.converter,
+        chapters: vec![Chapter {
+            title: portion.label.clone(),
+            blocks,
+        }],
+    }
 }
 
 /// Lets `c` mark the open plan day complete (plan readings only).
@@ -715,7 +739,7 @@ pub fn run(
     let (mut laid_width, mut laid_chapter, mut laid_height) = (0usize, usize::MAX, 0usize);
     let mut notice = match portion {
         Some(p) => format!(
-            "Plan reading: {} · read to the end-of-reading marker; c marks the day complete · m returns to the plan",
+            "Plan reading: {} · one continuous buffer, read to the end-of-reading marker; c marks the day complete · m returns to the plan",
             p.label
         ),
         None => "/ search · t chapters · H/L (Shift+←/→) chapters · m library · q quit".to_string(),
@@ -771,7 +795,7 @@ pub fn run(
             } else {
                 lines[top.min(lines.len() - 1)].block
             });
-            let stop = portion.filter(|p| p.chapter == chapter).map(|p| p.end);
+            let stop = portion.map(|_| doc.chapters[chapter].blocks.len());
             let enabled = images.enabled();
             lines = render_with(
                 &doc.chapters[chapter],
@@ -1070,7 +1094,11 @@ pub fn run(
                     chapter += 1;
                     anchor_block = Some(0);
                 } else {
-                    notice = "Last chapter. H goes back; t lists chapters.".into();
+                    notice = if portion.is_some() {
+                        "End of the day's reading is at the bottom.".into()
+                    } else {
+                        "Last chapter. H goes back; t lists chapters.".into()
+                    };
                 }
             }
             b'H' => {
@@ -1078,7 +1106,11 @@ pub fn run(
                     chapter -= 1;
                     anchor_block = Some(0);
                 } else {
-                    notice = "First chapter. L goes forward; t lists chapters.".into();
+                    notice = if portion.is_some() {
+                        "Start of the day's reading.".into()
+                    } else {
+                        "First chapter. L goes forward; t lists chapters.".into()
+                    };
                 }
             }
             b't' | b'o' => {
@@ -1156,15 +1188,18 @@ pub fn run(
     } else {
         lines[top.min(lines.len() - 1)].block
     };
-    let _ = save_position(
-        base,
-        file,
-        Position {
-            version: 1,
-            chapter,
-            block,
-        },
-    );
+    // A plan day is a synthetic buffer; its positions must not overwrite free reading.
+    if portion.is_none() {
+        let _ = save_position(
+            base,
+            file,
+            Position {
+                version: 1,
+                chapter,
+                block,
+            },
+        );
+    }
     let _ = io::stdout().flush();
     Ok(exit)
 }
@@ -1246,6 +1281,46 @@ mod tests {
         for line in wrapped.iter().filter(|l| l.style != Style::Page) {
             assert_eq!(line.text.find('│'), Some(bar));
         }
+    }
+
+    #[test]
+    fn a_plan_day_joins_its_units_into_one_buffer_ending_in_the_marker() {
+        let doc = Document {
+            title: "T".into(),
+            chapters: vec![
+                chapter(
+                    "A",
+                    vec![
+                        block(Kind::Paragraph, "a0"),
+                        block(Kind::Paragraph, "a1"),
+                        block(Kind::Paragraph, "a2"),
+                    ],
+                ),
+                chapter(
+                    "B",
+                    vec![block(Kind::Paragraph, "b0"), block(Kind::Paragraph, "b1")],
+                ),
+            ],
+            ..Document::default()
+        };
+        let portion = Portion {
+            ranges: vec![(0, 1, 3), (1, 0, 1)],
+            label: "day".into(),
+        };
+        let day = portion_document(&doc, &portion);
+        assert_eq!(day.chapters.len(), 1);
+        let texts: Vec<&str> = day.chapters[0]
+            .blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect();
+        assert_eq!(texts, ["a1", "a2", "b0"]);
+        let lines = render_with(&day.chapters[0], 60, None, 0, Some(3));
+        assert_eq!(lines.last().map(|l| l.style), Some(Style::Body));
+        assert!(lines.iter().any(|l| l.text == STOP_TEXT));
+        let marker = lines.iter().position(|l| l.text == STOP_TEXT).unwrap();
+        assert!(lines[..marker].iter().any(|l| l.text == "b0"));
+        assert!(lines[marker..].iter().all(|l| l.text != "b1"));
     }
 
     #[test]

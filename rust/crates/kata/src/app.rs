@@ -329,6 +329,10 @@ fn open_book(
             );
         }
     };
+    let doc = match portion {
+        Some(p) => book_reader::portion_document(&doc, p),
+        None => doc,
+    };
     match book_reader::run(
         tui,
         &doc,
@@ -571,6 +575,11 @@ fn day_items(
             let pick =
                 |chapter: u16| &units[usize::from(chapter).saturating_sub(1).min(units.len() - 1)];
             let (first, last) = (pick(chapters[i].chapter), pick(chapters[j - 1].chapter));
+            let ranges: Vec<(usize, usize, usize)> = chapters[i..j]
+                .iter()
+                .map(|c| pick(c.chapter))
+                .map(|u| (u.chapter, u.start, u.end))
+                .collect();
             let label = if i + 1 == j {
                 first.label.clone()
             } else {
@@ -580,16 +589,8 @@ fn day_items(
                 label: format!("{} · {label}", shelf.entries[index].title),
                 references: Vec::new(),
                 book: Some(index),
-                start: Position {
-                    version: 1,
-                    chapter: first.chapter,
-                    block: first.start,
-                },
-                portion: Some(Portion {
-                    chapter: last.chapter,
-                    end: last.end,
-                    label,
-                }),
+                start: Position::default(),
+                portion: Some(Portion { ranges, label }),
             });
         } else {
             let references: Vec<String> = chapters[i..j]
