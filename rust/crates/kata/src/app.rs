@@ -590,7 +590,11 @@ fn day_items(
                 references: Vec::new(),
                 book: Some(index),
                 start: Position::default(),
-                portion: Some(Portion { ranges, label }),
+                portion: Some(Portion {
+                    ranges,
+                    label,
+                    key: format!("plan-{:x}-{ordinal}-{}", entry.hash, items.len()),
+                }),
             });
         } else {
             let references: Vec<String> = chapters[i..j]

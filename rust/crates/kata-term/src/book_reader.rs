@@ -49,6 +49,8 @@ impl Default for Position {
 pub struct Portion {
     pub ranges: Vec<(usize, usize, usize)>,
     pub label: String,
+    /// Identifies this plan, day and item; the reading place is saved under it.
+    pub key: String,
 }
 
 /// The day's text as a single-chapter document.
@@ -727,7 +729,10 @@ pub fn run(
     portion: Option<&Portion>,
     mut completion: Option<Completion<'_>>,
 ) -> io::Result<Exit> {
-    let mut position = start.unwrap_or_else(|| load_position(base, file));
+    let mut position = match portion {
+        Some(p) => load_position(base, &p.key),
+        None => start.unwrap_or_else(|| load_position(base, file)),
+    };
     if position.chapter >= doc.chapters.len() {
         position = Position::default();
     }
@@ -1188,18 +1193,17 @@ pub fn run(
     } else {
         lines[top.min(lines.len() - 1)].block
     };
-    // A plan day is a synthetic buffer; its positions must not overwrite free reading.
-    if portion.is_none() {
-        let _ = save_position(
-            base,
-            file,
-            Position {
-                version: 1,
-                chapter,
-                block,
-            },
-        );
-    }
+    let saved = Position {
+        version: 1,
+        chapter,
+        block,
+    };
+    // A plan day is its own buffer: its place is saved per plan, day and item, so free reading
+    // of the same book keeps its own position.
+    let _ = match portion {
+        Some(p) => save_position(base, &p.key, saved),
+        None => save_position(base, file, saved),
+    };
     let _ = io::stdout().flush();
     Ok(exit)
 }
@@ -1306,6 +1310,7 @@ mod tests {
         let portion = Portion {
             ranges: vec![(0, 1, 3), (1, 0, 1)],
             label: "day".into(),
+            key: "k".into(),
         };
         let day = portion_document(&doc, &portion);
         assert_eq!(day.chapters.len(), 1);

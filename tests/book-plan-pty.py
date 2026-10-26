@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix='kata-bookplan-') as folder:
     send(b'1\r', 'Day 1/60')
     send(b'1\r', 'Stasis 1')
     frame = send(b'\x04\x04\x04', "end of today's reading")
+    # Leaving mid-day and reopening the same item returns to the saved place (bottom of the day).
+    send(b'm', 'Day 1/60'); send(b'1\r', "end of today's reading")
     # c inside the book marks the day complete (any other key cancels first).
     send(b'c', "Mark today's reading complete?"); send(b'n', 'Not marked complete')
     send(b'c', "Mark today's reading complete?"); send(b'y', 'Completed and saved')
