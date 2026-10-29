@@ -505,6 +505,8 @@ fn render_panel(
 pub enum Choice {
     Pick(usize),
     Remove(usize),
+    /// A live ingest finished with new books: the caller reloads and reopens the menu.
+    Reload,
 }
 
 #[derive(Default)]
@@ -513,6 +515,8 @@ pub struct ChooseOptions<'a> {
     pub haystack: Option<&'a [String]>,
     /// The first N rows can be removed with `x` (after a y confirmation).
     pub removable_rows: usize,
+    /// Return `Choice::Reload` when a live ingest has finished.
+    pub reload_on_ingest: bool,
 }
 
 fn refilter(labels: &[String], haystack: Option<&[String]>, filter: &str) -> Vec<usize> {
@@ -658,6 +662,13 @@ impl Tui {
         };
         if key == Some(3) {
             backend::interrupt();
+            return Ok(None);
+        }
+        if key == Some(18) {
+            // Ctrl+R: ingest check in the background. Ignored while typing text.
+            if !self.decoder.text {
+                crate::live_ingest::global().request();
+            }
             return Ok(None);
         }
         Ok(key)
@@ -836,8 +847,9 @@ impl Tui {
                 number_base,
                 &ChooseOptions::default(),
             )?
-            .map(|choice| match choice {
-                Choice::Pick(index) | Choice::Remove(index) => index,
+            .and_then(|choice| match choice {
+                Choice::Pick(index) | Choice::Remove(index) => Some(index),
+                Choice::Reload => None,
             }))
     }
 
@@ -881,7 +893,10 @@ impl Tui {
                         w.push_str("\r\nEnlarge terminal. Esc/q returns.");
                     } else {
                         let _ = write!(w, "\x1b[2;1H{}", theme::DIM);
-                        w.push_str(clipped(description, columns));
+                        w.push_str(clipped(
+                            &crate::live_ingest::global().overlay_or(description),
+                            columns,
+                        ));
                         let capacity = height - 6;
                         let count = visible.len();
                         let first = picker
@@ -944,7 +959,11 @@ impl Tui {
                     old_height = height;
                     redraw = false;
                 }
+                if options.reload_on_ingest && crate::live_ingest::global().refresh_pending() {
+                    return Ok(Some(Choice::Reload));
+                }
                 let Some(key) = self.read_key()? else {
+                    redraw |= crate::live_ingest::global().changed();
                     continue;
                 };
                 redraw = true;
@@ -1152,7 +1171,10 @@ impl Tui {
                     );
                     w.push_str(clipped(&title, columns.saturating_sub(12)));
                     let _ = write!(w, "\x1b[2;1H{}", theme::DIM);
-                    w.push_str(clipped(&notice, columns));
+                    w.push_str(clipped(
+                        &crate::live_ingest::global().overlay_or(&notice),
+                        columns,
+                    ));
                     let highlight = finder.as_deref().and_then(|f| f.highlight());
                     if reader_visible {
                         w.push_str("\x1b[3;1H");
@@ -1252,6 +1274,7 @@ impl Tui {
             self.decoder.text =
                 finder.as_deref().is_some_and(|f| f.prompt) && picker.kind == Kind::Closed;
             let Some(key) = self.read_key()? else {
+                redraw |= crate::live_ingest::global().changed();
                 continue;
             };
             if picker.kind != Kind::Closed {

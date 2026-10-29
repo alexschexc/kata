@@ -851,7 +851,10 @@ pub fn run(
                 let _ = write!(w, "\x1b[1;1H\x1b[1m{GOLD} K A T A  \x1b[0m{PAPER}{INK}");
                 w.push_str(tui::clipped(&title, columns.saturating_sub(12)));
                 let _ = write!(w, "\x1b[2;1H{DIM}");
-                w.push_str(tui::clipped(&notice, columns));
+                w.push_str(tui::clipped(
+                    &crate::live_ingest::global().overlay_or(&notice),
+                    columns,
+                ));
                 let highlight = finder.highlight().map(|(_, query)| *query);
                 if reader_visible {
                     for row in 0..body_height {
@@ -982,7 +985,10 @@ pub fn run(
             redraw = false;
         }
         tui.set_text_input(finder.prompt);
-        let Some(key) = tui.read_key()? else { continue };
+        let Some(key) = tui.read_key()? else {
+            redraw |= crate::live_ingest::global().changed();
+            continue;
+        };
         redraw = true;
         if confirm_complete {
             confirm_complete = false;

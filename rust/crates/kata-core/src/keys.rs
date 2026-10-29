@@ -5,7 +5,7 @@
 pub fn recognized(byte: u8) -> bool {
     matches!(
         byte,
-        3 | 4 | 8 | 9 | 10 | 13 | 21 | 27 | 127 | b'0'
+        3 | 4 | 8 | 9 | 10 | 13 | 18 | 21 | 27 | 127 | b'0'
             ..=b'9'
                 | b'j'
                 | b'k'

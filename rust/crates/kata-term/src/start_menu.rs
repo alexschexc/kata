@@ -17,6 +17,8 @@ pub enum Choice {
     BuildPlan,
     Plans,
     Theme,
+    /// A live ingest finished: reload the book list and reopen the Library.
+    Reload,
 }
 
 /// Ingested documents offered in the Library after the built-in titles.
@@ -254,6 +256,7 @@ pub fn run(
         let options = ChooseOptions {
             haystack: Some(&haystack),
             removable_rows: 0,
+            reload_on_ingest: true,
         };
         let Some(picked) =
             tui.choose_opts("Library", notice, &labels, selected_title, 1, &options)?
@@ -262,6 +265,7 @@ pub fn run(
         };
         let title_row = match picked {
             crate::tui::Choice::Pick(row) | crate::tui::Choice::Remove(row) => row,
+            crate::tui::Choice::Reload => return Ok(Some(Choice::Reload)),
         };
         let plans_row = visible.len();
         let books_end = plans_row + 1 + books.len();

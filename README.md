@@ -79,6 +79,7 @@ Your choice is saved in `<config>/kata/folders.json` (normally `~/.config/kata/f
 kata ingest                  # convert new/changed EPUBs, print a per-book report
 kata ingest --force          # reconvert everything
 kata ingest --ingest-dir P --library-dir P          # use these folders for this run only
+Inside the app, Ctrl+R runs the same check in the background (Library or any reader).
 kata ingest --ingest-dir P --library-dir P --save   # ...and remember them
 ```
 

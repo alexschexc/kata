@@ -6,6 +6,13 @@ never breaks anything.
 
 ## [Unreleased]
 
+### Added
+
+- Ctrl+R checks the ingest folder for new or changed EPUBs while Kata is open,
+  from the Library or from any reader. It runs in the background, so you keep
+  reading; a line on the screen says when it starts and what it found, and the
+  Library lists the new books straight away.
+
 ## [0.4.1] - 2026-10-26
 
 ### Changed

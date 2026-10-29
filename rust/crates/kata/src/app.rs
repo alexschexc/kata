@@ -1020,10 +1020,11 @@ fn plans_menu(
         let options = ChooseOptions {
             haystack: None,
             removable_rows: plans.entries.len(),
+            reload_on_ingest: false,
         };
         let initial = (*selected).min(labels.len() - 1);
         match tui.choose_opts("Reading plans", &note, &labels, initial, 1, &options)? {
-            None => break,
+            None | Some(tui::Choice::Reload) => break,
             Some(tui::Choice::Pick(index)) => {
                 return Ok(Some(if index == plans.entries.len() {
                     Choice::BuildPlan
@@ -1154,6 +1155,14 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
         }
     }
     while !tui.is_interrupted() {
+        // Ctrl+R (live ingest) works from every screen: keep its folders current, and load the
+        // books of a finished run before the Library is shown.
+        let live = kata_term::live_ingest::global();
+        live.set_folders(shelf.folders.configured().then(|| shelf.folders.clone()));
+        if live.take_refresh() && shelf.folders.configured() {
+            let library = PathBuf::from(&shelf.folders.library);
+            shelve(&mut shelf, ingest::load_index(&library).unwrap_or_default());
+        }
         if active.is_none() {
             match start_menu::run(
                 &mut tui,
@@ -1178,6 +1187,11 @@ pub fn run(base: &str, explicit_plan: Option<&str>, initial_passage: Option<&str
         match active.expect("set above") {
             Choice::Plan(index) => selected = index,
             Choice::Free(at) => free = Some(at),
+            Choice::Reload => {
+                // The Library asked to be rebuilt; the top of the loop reloads the books.
+                active = None;
+                continue;
+            }
             Choice::Theme => {
                 active = None;
                 let before = theme::current();
